@@ -43,11 +43,17 @@ class ParquetStore:
             df.index = pd.to_datetime(df.index, utc=True)
             df.index.name = "timestamp"
 
+        def _to_utc(ts_like: str | pd.Timestamp) -> pd.Timestamp:
+            ts = pd.Timestamp(ts_like)
+            if ts.tzinfo is None:
+                return ts.tz_localize("UTC")
+            return ts.tz_convert("UTC")
+
         if start is not None:
-            start_ts = pd.Timestamp(start, tz="UTC") if pd.Timestamp(start).tzinfo is None else pd.Timestamp(start).tz_convert("UTC")
+            start_ts = _to_utc(start)
             df = df[df.index >= start_ts]
         if end is not None:
-            end_ts = pd.Timestamp(end, tz="UTC") if pd.Timestamp(end).tzinfo is None else pd.Timestamp(end).tz_convert("UTC")
+            end_ts = _to_utc(end)
             df = df[df.index <= end_ts]
 
         return df.sort_index()

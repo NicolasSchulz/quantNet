@@ -6,6 +6,7 @@ import pandas as pd
 
 from backtesting.cost_model import CostModel
 from backtesting.metrics import summary
+from risk.position_sizer import VolatilityParitySizer
 from strategies.base_strategy import BaseStrategy
 
 
@@ -14,10 +15,12 @@ class BacktestResult:
     equity_curve: pd.Series
     trades: pd.DataFrame
     metrics: dict[str, float]
+    regime_status: pd.Series | None = None
 
 
 def _rebalance_dates(index: pd.DatetimeIndex, freq: str) -> pd.DatetimeIndex:
-    return index.to_series().groupby(index.to_period(freq)).tail(1).index
+    naive = index.tz_localize(None) if index.tz is not None else index
+    return index.to_series().groupby(naive.to_period(freq)).tail(1).index
 
 
 def _update_position(prev_qty: float, prev_avg: float, trade_qty: float, fill_price: float) -> tuple[float, float, float]:
@@ -62,6 +65,8 @@ def run(
     initial_capital: float,
     cost_model: CostModel,
     rebalance_frequency: str = "M",
+    sizing_method: str = "equal_weight",
+    volatility_sizer: VolatilityParitySizer | None = None,
 ) -> BacktestResult:
     if not data:
         raise ValueError("Backtest data cannot be empty")
@@ -86,8 +91,10 @@ def run(
         signal_matrix = pd.DataFrame(raw_signals).reindex(close_prices.index).fillna(0)
 
     signal_matrix = signal_matrix.reindex(columns=close_prices.columns, fill_value=0).astype(float)
+    returns = close_prices.pct_change().fillna(0.0)
 
     rebal_dates = set(_rebalance_dates(close_prices.index, rebalance_frequency))
+    sizer = volatility_sizer or VolatilityParitySizer()
 
     shares = {sym: 0.0 for sym in close_prices.columns}
     avg_cost = {sym: 0.0 for sym in close_prices.columns}
@@ -105,11 +112,22 @@ def run(
 
         if current_dt in rebal_dates:
             row_signals = signal_matrix.loc[current_dt]
-            abs_sum = row_signals.abs().sum()
-            if abs_sum > 0:
-                target_weights = row_signals / abs_sum
+            if sizing_method == "equal_weight":
+                abs_sum = row_signals.abs().sum()
+                if abs_sum > 0:
+                    target_weights = row_signals / abs_sum
+                else:
+                    target_weights = row_signals * 0.0
+            elif sizing_method == "volatility_parity":
+                target_weights = sizer.compute_weights(
+                    signals=row_signals,
+                    returns=returns,
+                    date=current_dt,
+                ).reindex(row_signals.index).fillna(0.0)
             else:
-                target_weights = row_signals * 0.0
+                raise ValueError(
+                    "sizing_method must be 'equal_weight' or 'volatility_parity'"
+                )
 
             current_equity = cash + sum(shares[s] * close_prices.loc[current_dt, s] for s in shares)
 
@@ -161,4 +179,10 @@ def run(
         )
 
     stats = summary(equity_curve=equity_curve, trades=trades_df["realized_pnl"])
-    return BacktestResult(equity_curve=equity_curve, trades=trades_df, metrics=stats)
+    regime_status = getattr(strategy, "regime_series", None)
+    return BacktestResult(
+        equity_curve=equity_curve,
+        trades=trades_df,
+        metrics=stats,
+        regime_status=regime_status,
+    )

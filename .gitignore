@@ -8,3 +8,4 @@ data/cache/
 dist/
 build/
 .pytest_cache/
+venv/

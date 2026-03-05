@@ -1,9 +1,12 @@
 data:
   storage_path: "./data/cache"
   default_interval: "1d"
+  lookback_years: 5
 
 backtesting:
   initial_capital: 100000
+  rebalance_frequency: "M"
+  sizing_method: "equal_weight"
   cost_model:
     commission: 0.001
     slippage_bps: 5
@@ -17,3 +20,26 @@ risk:
   max_position_size: 0.20
   max_portfolio_concentration: 0.40
   default_sizing: equal_weight
+  vol_parity:
+    target_vol: 0.10
+    lookback_days: 60
+    max_position: 0.20
+
+strategy:
+  formation_months: 12
+  skip_months: 1
+  rebalance_freq: "M"
+  long_quantile: 0.20
+  short_quantile: 0.20
+  use_regime_filter: true
+  regime_benchmark: "SPY"
+  regime_ma_window: 200
+
+optimizer:
+  enabled: false
+  train_fraction: 0.70
+  overfit_ratio_warning: 1.5
+  param_grid:
+    formation_months: [3, 6, 9, 12]
+    skip_months: [0, 1]
+    rebalance_freq: ["M", "W"]
