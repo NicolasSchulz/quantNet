@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 
@@ -16,6 +16,7 @@ class BacktestResult:
     trades: pd.DataFrame
     metrics: dict[str, float]
     regime_status: pd.Series | None = None
+    strategy_metadata: dict = field(default_factory=dict)
 
 
 def _rebalance_dates(index: pd.DatetimeIndex, freq: str) -> pd.DatetimeIndex:
@@ -81,17 +82,35 @@ def run(
     if len(open_prices) < 3:
         raise ValueError("Need at least 3 aligned bars for backtest.")
 
-    raw_signals = strategy.generate_signals(close_prices)
+    if bool(getattr(strategy, "expects_ohlcv", False)):
+        if len(data) != 1:
+            raise ValueError("Strategies requiring OHLCV currently support single-symbol backtests only.")
+        only_symbol = list(data.keys())[0]
+        raw_input = data[only_symbol][["open", "high", "low", "close", "volume"]].reindex(close_prices.index)
+    else:
+        raw_input = close_prices
+
+    raw_signals = strategy.generate_signals(raw_input)
     if raw_signals.empty:
         raise ValueError("Strategy returned no signals.")
 
     if isinstance(raw_signals.index, pd.MultiIndex):
         signal_matrix = raw_signals.unstack("symbol").reindex(close_prices.index).fillna(0)
     else:
-        signal_matrix = pd.DataFrame(raw_signals).reindex(close_prices.index).fillna(0)
+        if isinstance(raw_signals, pd.Series):
+            if raw_signals.name in close_prices.columns:
+                signal_matrix = raw_signals.to_frame(name=str(raw_signals.name))
+            elif len(close_prices.columns) == 1:
+                signal_matrix = raw_signals.to_frame(name=close_prices.columns[0])
+            else:
+                signal_matrix = pd.DataFrame(raw_signals)
+        else:
+            signal_matrix = pd.DataFrame(raw_signals)
+        signal_matrix = signal_matrix.reindex(close_prices.index).fillna(0)
 
     signal_matrix = signal_matrix.reindex(columns=close_prices.columns, fill_value=0).astype(float)
     returns = close_prices.pct_change().fillna(0.0)
+    warmup_bars = int(strategy.warmup_bars()) if hasattr(strategy, "warmup_bars") else 0
 
     rebal_dates = set(_rebalance_dates(close_prices.index, rebalance_frequency))
     sizer = volatility_sizer or VolatilityParitySizer()
@@ -110,7 +129,7 @@ def run(
         current_dt = close_prices.index[i]
         next_dt = close_prices.index[i + 1]
 
-        if current_dt in rebal_dates:
+        if i >= warmup_bars and current_dt in rebal_dates:
             row_signals = signal_matrix.loc[current_dt]
             if sizing_method == "equal_weight":
                 abs_sum = row_signals.abs().sum()
@@ -180,9 +199,11 @@ def run(
 
     stats = summary(equity_curve=equity_curve, trades=trades_df["realized_pnl"])
     regime_status = getattr(strategy, "regime_series", None)
+    strategy_metadata = strategy.get_parameters() if hasattr(strategy, "get_parameters") else {}
     return BacktestResult(
         equity_curve=equity_curve,
         trades=trades_df,
         metrics=stats,
         regime_status=regime_status,
+        strategy_metadata=strategy_metadata,
     )

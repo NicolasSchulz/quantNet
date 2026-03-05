@@ -23,6 +23,7 @@ class SimpleMomentumStrategy(BaseStrategy):
     regime_ma_window: int = 200
     tradable_symbols: list[str] | None = None
     regime_series: pd.Series | None = None
+    external_regime_series: pd.Series | None = None
 
     def get_name(self) -> str:
         return "SimpleMomentum"
@@ -88,15 +89,22 @@ class SimpleMomentumStrategy(BaseStrategy):
         signals = signals.replace(0, pd.NA).ffill().fillna(0).astype(int)
 
         if self.use_regime_filter:
-            regime_filter = RegimeFilter(
-                benchmark=self.regime_benchmark,
-                ma_window=self.regime_ma_window,
-            )
-            self.regime_series = regime_filter.get_regime_series(prices)
+            if self.external_regime_series is not None:
+                self.regime_series = self.external_regime_series.reindex(signals.index).ffill().fillna(False)
+            else:
+                regime_filter = RegimeFilter(
+                    benchmark=self.regime_benchmark,
+                    ma_window=self.regime_ma_window,
+                )
+                self.regime_series = regime_filter.get_regime_series(prices)
             # Long-only when regime filter is enabled: convert shorts to flat.
             signals = signals.clip(lower=0)
             stacked_pre = signals.stack()
             stacked_pre.index.names = ["timestamp", "symbol"]
+            regime_filter = RegimeFilter(
+                benchmark=self.regime_benchmark,
+                ma_window=self.regime_ma_window,
+            )
             filtered = regime_filter.filter_signals(stacked_pre, self.regime_series)
             signals = filtered.unstack("symbol").reindex(signals.index).fillna(0).astype(int)
         else:

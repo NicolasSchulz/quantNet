@@ -30,6 +30,7 @@ def test_normalize_schema_and_utc(raw_df: pd.DataFrame) -> None:
         "low",
         "close",
         "volume",
+        "vwap",
         "symbol",
         "asset_class",
     ]
@@ -47,3 +48,23 @@ def test_normalize_raises_on_negative_volume(raw_df: pd.DataFrame) -> None:
     raw_df.loc[raw_df.index[0], "Volume"] = -1
     with pytest.raises(ValueError, match="Volume"):
         normalize_ohlcv(raw_df, symbol="SPY", asset_class="etf")
+
+
+def test_normalize_polygon_epoch_milliseconds() -> None:
+    ts_ms = [1704067200000, 1704070800000]
+    raw = pd.DataFrame(
+        {
+            "timestamp": ts_ms,
+            "open": [100.0, 101.0],
+            "high": [101.0, 102.0],
+            "low": [99.0, 100.0],
+            "close": [100.5, 101.5],
+            "volume": [1000, 1200],
+            "vwap": [100.2, 101.2],
+        }
+    )
+
+    out = normalize_ohlcv(raw, symbol="SPY", asset_class="etf")
+
+    assert out.index[0] == pd.Timestamp("2024-01-01 00:00:00+00:00")
+    assert out.index[1] == pd.Timestamp("2024-01-01 01:00:00+00:00")

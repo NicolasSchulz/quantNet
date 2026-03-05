@@ -10,11 +10,14 @@ import yaml
 from backtesting.cost_model import CostModel
 from backtesting.engine import BacktestResult, run
 from backtesting.optimizer import LookbackOptimizer
-from data.ingestion.yahoo_feed import YahooFeed
+from data.ingestion.feed_factory import FeedFactory
 from data.normalizer import normalize_ohlcv
 from data.storage.parquet_store import ParquetStore
 from data.universes.etf_universe import EtfUniverse
 from strategies.examples.simple_momentum import SimpleMomentumStrategy
+from strategies.filters.regime_filter import RegimeFilter
+
+MIN_SYMBOLS_PER_SCENARIO = 3
 
 
 def load_settings(path: str = "config/settings.yaml") -> dict:
@@ -27,7 +30,7 @@ def _load_or_fetch_symbol(
     start: pd.Timestamp,
     end: pd.Timestamp,
     interval: str,
-    feed: YahooFeed,
+    feed,
     store: ParquetStore,
 ) -> pd.DataFrame:
     symbol = symbol.upper()
@@ -37,7 +40,7 @@ def _load_or_fetch_symbol(
             return cached
 
     raw = feed.fetch_historical(symbol=symbol, start=start, end=end, interval=interval)
-    normalized = normalize_ohlcv(raw, symbol=symbol, asset_class="etf")
+    normalized = normalize_ohlcv(raw, symbol=symbol, asset_class="etf", interval=interval)
     store.save(normalized, symbol=symbol, interval=interval)
     start_ts = pd.Timestamp(start)
     end_ts = pd.Timestamp(end)
@@ -57,20 +60,45 @@ def fetch_universe_cached(
     start: pd.Timestamp,
     end: pd.Timestamp,
     interval: str,
-    feed: YahooFeed,
+    feed,
     store: ParquetStore,
 ) -> dict[str, pd.DataFrame]:
     data: dict[str, pd.DataFrame] = {}
+    failures: list[str] = []
     for symbol in symbols:
-        data[symbol] = _load_or_fetch_symbol(
-            symbol=symbol,
-            start=start,
-            end=end,
-            interval=interval,
-            feed=feed,
-            store=store,
-        )
+        try:
+            symbol_df = _load_or_fetch_symbol(
+                symbol=symbol,
+                start=start,
+                end=end,
+                interval=interval,
+                feed=feed,
+                store=store,
+            )
+        except (LookupError, RuntimeError, FileNotFoundError, ValueError) as exc:
+            failures.append(f"{symbol}: {exc}")
+            continue
+
+        if symbol_df.empty:
+            failures.append(f"{symbol}: empty dataset after cache/fetch filtering")
+            continue
+        data[symbol] = symbol_df
+
+    if failures:
+        print("\nWARNING: Some symbols could not be loaded:")
+        for item in failures:
+            print(f"- {item}")
     return data
+
+
+def _require_minimum_data(data: dict[str, pd.DataFrame], scenario_name: str, min_symbols: int) -> None:
+    if len(data) < min_symbols:
+        loaded = ", ".join(sorted(data.keys())) if data else "none"
+        raise RuntimeError(
+            f"{scenario_name}: too few symbols with usable data ({len(data)} < {min_symbols}). "
+            f"Loaded: {loaded}. "
+            "Check network/Yahoo availability or use an existing Parquet cache."
+        )
 
 
 def _print_table(rows: list[dict[str, str]]) -> None:
@@ -116,13 +144,12 @@ def main() -> None:
     settings = load_settings()
 
     initial_capital = float(settings["backtesting"]["initial_capital"])
-    interval = settings["data"]["default_interval"]
+    interval = settings["data"]["intervals"]["primary"]
+    daily_interval = settings["data"]["intervals"]["daily"]
     lookback_years = int(settings["data"].get("lookback_years", 5))
     cost_cfg = settings["backtesting"]["cost_model"]
     strategy_cfg = settings["strategy"]
     optimizer_cfg = settings["optimizer"]
-    vol_cfg = settings["risk"]["vol_parity"]
-
     cost_model = CostModel(
         commission=float(cost_cfg["commission"]),
         slippage_bps=float(cost_cfg["slippage_bps"]),
@@ -132,8 +159,7 @@ def main() -> None:
     end = pd.Timestamp.utcnow()
     start = end - pd.DateOffset(years=lookback_years)
 
-    feed = YahooFeed()
-    store = ParquetStore(storage_path=settings["data"]["storage_path"])
+    feed, store = FeedFactory.create_with_cache(config=settings)
     universe = EtfUniverse()
 
     original_symbols = ["SPY", "QQQ", "EEM", "GLD", "TLT"]
@@ -141,19 +167,47 @@ def main() -> None:
 
     data_a = fetch_universe_cached(original_symbols, start, end, interval, feed, store)
     data_b = fetch_universe_cached(broad_symbols, start, end, interval, feed, store)
+    _require_minimum_data(data_a, "Szenario A", MIN_SYMBOLS_PER_SCENARIO)
+    _require_minimum_data(data_b, "Szenario B/C/D", MIN_SYMBOLS_PER_SCENARIO)
 
     # Regime filter benchmark data for scenarios C and D (helper symbol, not traded).
     data_cd = dict(data_b)
     regime_benchmark = str(strategy_cfg.get("regime_benchmark", "SPY")).upper()
     if regime_benchmark not in data_cd:
-        data_cd[regime_benchmark] = _load_or_fetch_symbol(
+        try:
+            data_cd[regime_benchmark] = _load_or_fetch_symbol(
+                symbol=regime_benchmark,
+                start=start,
+                end=end,
+                interval=interval,
+                feed=feed,
+                store=store,
+            )
+        except (LookupError, RuntimeError, FileNotFoundError, ValueError) as exc:
+            raise RuntimeError(
+                f"Regime benchmark '{regime_benchmark}' could not be loaded: {exc}. "
+                "Scenario C/D requires this benchmark for the regime filter."
+            ) from exc
+
+    # 1h strategy bars + daily regime benchmark (200d MA) projected onto 1h index.
+    daily_regime_series = None
+    try:
+        spy_daily = _load_or_fetch_symbol(
             symbol=regime_benchmark,
             start=start,
             end=end,
-            interval=interval,
+            interval=daily_interval,
             feed=feed,
             store=store,
         )
+        regime_filter_daily = RegimeFilter(benchmark=regime_benchmark, ma_window=int(strategy_cfg.get("regime_ma_window", 200)))
+        daily_regime = regime_filter_daily.get_regime_series(
+            spy_daily[["close"]].rename(columns={"close": regime_benchmark})
+        )
+        ref_index = list(data_cd.values())[0].index
+        daily_regime_series = daily_regime.reindex(ref_index).ffill().fillna(False)
+    except Exception as exc:
+        print(f"WARNING: Daily regime benchmark unavailable, fallback to in-timeframe regime ({exc})")
 
     optimizer = LookbackOptimizer(
         strategy_class=SimpleMomentumStrategy,
@@ -225,6 +279,7 @@ def main() -> None:
             regime_benchmark=regime_benchmark,
             regime_ma_window=int(strategy_cfg.get("regime_ma_window", 200)),
             tradable_symbols=broad_symbols,
+            external_regime_series=daily_regime_series,
         ),
         data=data_cd,
         initial_capital=initial_capital,
@@ -242,6 +297,7 @@ def main() -> None:
             regime_benchmark=regime_benchmark,
             regime_ma_window=int(strategy_cfg.get("regime_ma_window", 200)),
             tradable_symbols=broad_symbols,
+            external_regime_series=daily_regime_series,
         ),
         data=data_cd,
         initial_capital=initial_capital,
@@ -257,6 +313,48 @@ def main() -> None:
         "D": scenario_d,
     }
 
+    # Scenario E: ML strategy on SPY via registry default model.
+    ml_cfg = settings.get("ml", {})
+    registry_path = ml_cfg.get("registry", {}).get("path", "./models/registry.json")
+    ml_strategy_cfg = ml_cfg.get("strategy", {})
+    if "SPY" in data_cd:
+        try:
+            from strategies.filters.regime_filter import RegimeFilter
+            from strategies.ml.feature_engineer import FeatureEngineer
+            from strategies.ml.ml_strategy import MLStrategy
+            from strategies.ml.model_registry import ModelNotFoundError, ModelRegistry
+            from strategies.ml.signal_filter import SignalFilter
+
+            registry = ModelRegistry(registry_path=str(registry_path))
+            signal_filter = SignalFilter(
+                min_confidence=float(ml_strategy_cfg.get("min_confidence", 0.45)),
+                regime_filter=RegimeFilter() if bool(ml_strategy_cfg.get("use_regime_filter", True)) else None,
+                min_holding_days=int(ml_strategy_cfg.get("min_holding_days", 3)),
+                signal_smoothing=bool(ml_strategy_cfg.get("signal_smoothing", True)),
+            )
+            ml_strategy = MLStrategy(
+                symbol="SPY",
+                model_registry=registry,
+                feature_engineer=FeatureEngineer(),
+                signal_filter=signal_filter,
+            )
+            scenario_e = run(
+                strategy=ml_strategy,
+                data={"SPY": data_cd["SPY"]},
+                initial_capital=initial_capital,
+                cost_model=cost_model,
+                rebalance_frequency="D",
+                sizing_method="equal_weight",
+            )
+            results["E (ML)"] = scenario_e
+        except Exception as exc:
+            if "No default model set" in str(exc) or "not found in registry" in str(exc):
+                print("\nWARNING: Kein trainiertes Modell gefunden. Fuehre model_training.py aus.")
+            else:
+                print(f"\nWARNING: Scenario E (ML) skipped due to error: {exc}")
+    else:
+        print("\nWARNING: Scenario E (ML) skipped because SPY data is unavailable.")
+
     rows = [_format_result_row(label, result) for label, result in results.items()]
     print("\nSzenario-Vergleich:")
     _print_table(rows)
@@ -267,4 +365,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}")
+        raise SystemExit(1) from exc
