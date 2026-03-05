@@ -1,0 +1,19 @@
+data:
+  storage_path: "./data/cache"
+  default_interval: "1d"
+
+backtesting:
+  initial_capital: 100000
+  cost_model:
+    commission: 0.001
+    slippage_bps: 5
+    spread_bps: 2
+
+execution:
+  mode: paper
+  broker: paper
+
+risk:
+  max_position_size: 0.20
+  max_portfolio_concentration: 0.40
+  default_sizing: equal_weight
