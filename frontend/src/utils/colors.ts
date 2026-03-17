@@ -1,0 +1,16 @@
+export const colors = {
+  bgPrimary: "#0A0A0F",
+  bgSecondary: "#111118",
+  bgTertiary: "#1A1A24",
+  border: "#2A2A3A",
+  textPrimary: "#E8E8F0",
+  textSecondary: "#8888AA",
+  textMuted: "#555570",
+  green: "#00D4AA",
+  red: "#FF4466",
+  blue: "#4488FF",
+  yellow: "#FFB800",
+  purple: "#AA44FF",
+  cyan: "#00D4AA",
+  gray: "#6B7280",
+} as const

@@ -1,0 +1,17 @@
+params,sharpe,cagr,max_drawdown,calmar,n_trades,train_sharpe,overfit_warning
+"{'formation_months': 9, 'skip_months': 0, 'rebalance_freq': 'M'}",0.8592266881104499,0.11056943099580607,-0.04619854870810092,2.3933529101622564,83,-0.6653649124652887,False
+"{'formation_months': 9, 'skip_months': 1, 'rebalance_freq': 'M'}",0.7590948527000323,0.10158958304837884,-0.04886072109277062,2.079166675733116,97,-0.5150179531515106,False
+"{'formation_months': 6, 'skip_months': 1, 'rebalance_freq': 'M'}",0.7447230378950148,0.09860513912282642,-0.04787859052205934,2.0594829139215283,114,-0.6961148643221862,False
+"{'formation_months': 6, 'skip_months': 0, 'rebalance_freq': 'M'}",0.6766139764457499,0.09358076163730411,-0.04991980707491228,1.87462186095535,124,-0.7210074783043232,False
+"{'formation_months': 3, 'skip_months': 1, 'rebalance_freq': 'M'}",0.669828399161055,0.09102059141207319,-0.048680170445907,1.8697673113781415,136,-0.746430483483597,False
+"{'formation_months': 3, 'skip_months': 0, 'rebalance_freq': 'M'}",0.6243231712150998,0.08810870712771934,-0.051531320514152434,1.7098088356482422,139,-0.6819093088404428,False
+"{'formation_months': 12, 'skip_months': 0, 'rebalance_freq': 'M'}",0.12213131163584835,0.047023901849365,-0.04813904307625616,0.9768349938920746,48,-0.6051618333919266,False
+"{'formation_months': 3, 'skip_months': 1, 'rebalance_freq': 'W'}",0.0,0.0,0.0,0.0,0,0.0,False
+"{'formation_months': 6, 'skip_months': 1, 'rebalance_freq': 'W'}",0.0,0.0,0.0,0.0,0,0.0,False
+"{'formation_months': 6, 'skip_months': 0, 'rebalance_freq': 'W'}",0.0,0.0,0.0,0.0,0,0.0,False
+"{'formation_months': 3, 'skip_months': 0, 'rebalance_freq': 'W'}",0.0,0.0,0.0,0.0,0,0.0,False
+"{'formation_months': 9, 'skip_months': 0, 'rebalance_freq': 'W'}",0.0,0.0,0.0,0.0,0,0.0,False
+"{'formation_months': 9, 'skip_months': 1, 'rebalance_freq': 'W'}",0.0,0.0,0.0,0.0,0,0.0,False
+"{'formation_months': 12, 'skip_months': 0, 'rebalance_freq': 'W'}",0.0,0.0,0.0,0.0,0,0.0,False
+"{'formation_months': 12, 'skip_months': 1, 'rebalance_freq': 'W'}",0.0,0.0,0.0,0.0,0,0.0,False
+"{'formation_months': 12, 'skip_months': 1, 'rebalance_freq': 'M'}",-0.09236517303320163,0.03063159576105301,-0.054072471861145055,0.5664915012524886,50,-0.5365968477960538,False

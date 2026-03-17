@@ -1,0 +1,13 @@
+{
+  "name": "quantnet",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "app": "python scripts/start_app.py",
+    "frontend": "npm run dev --workspace frontend",
+    "frontend:build": "npm run build --workspace frontend"
+  }
+}
