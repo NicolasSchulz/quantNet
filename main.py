@@ -39,8 +39,9 @@ def main() -> None:
     settings = load_settings()
     validate_configuration(settings)
 
-    cost_cfg = settings["backtesting"]["cost_model"]
+    cost_cfg = settings["backtesting"]["cost_model"]["equity"]
     cost_model = CostModel(
+        asset_class="equity",
         commission=float(cost_cfg["commission"]),
         slippage_bps=float(cost_cfg["slippage_bps"]),
         spread_bps=float(cost_cfg["spread_bps"]),

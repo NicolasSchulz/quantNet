@@ -8,10 +8,10 @@ export const useTrades = (filters: TradeFilters) =>
     queryFn: () => fetchTrades(filters),
   })
 
-export const useTradeSummary = () =>
+export const useTradeSummary = (filters: Pick<TradeFilters, "asset_class"> = {}) =>
   useQuery({
-    queryKey: ["trade-summary"],
-    queryFn: fetchTradeSummary,
+    queryKey: ["trade-summary", filters],
+    queryFn: () => fetchTradeSummary(filters),
   })
 
 export const useTradeDetail = (tradeId: string | null) =>

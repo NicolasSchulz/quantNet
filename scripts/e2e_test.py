@@ -57,7 +57,7 @@ def main() -> None:
     strategy = MLStrategy(
         symbol=symbol,
         model_registry=registry,
-        feature_engineer=FeatureEngineer(),
+        feature_engineer=FeatureEngineer(asset_class="equity"),
         signal_filter=SignalFilter(
             min_confidence=float(settings["ml"]["strategy"]["min_confidence"]),
             regime_filter=RegimeFilter() if bool(settings["ml"]["strategy"].get("use_regime_filter", True)) else None,
@@ -77,8 +77,9 @@ def main() -> None:
         ohlcv = normalize_ohlcv(raw, symbol=symbol, asset_class="etf", interval=interval)
         store.save(ohlcv, symbol=symbol, interval=interval)
 
-    cost_cfg = settings["backtesting"]["cost_model"]
+    cost_cfg = settings["backtesting"]["cost_model"]["equity"]
     cost_model = CostModel(
+        asset_class="equity",
         commission=float(cost_cfg["commission"]),
         slippage_bps=float(cost_cfg["slippage_bps"]),
         spread_bps=float(cost_cfg["spread_bps"]),

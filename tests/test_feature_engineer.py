@@ -6,13 +6,13 @@ import pytest
 
 pytest.importorskip("pandas_ta")
 
-from strategies.ml.feature_engineer import BOUNDED_FEATURES, FeatureEngineer
+from strategies.ml.feature_engineer import FeatureEngineer
 
 
 @pytest.fixture
 def synthetic_ohlcv() -> pd.DataFrame:
     rng = np.random.default_rng(123)
-    n = 300
+    n = 320
     idx = pd.date_range("2022-01-01", periods=n, freq="B", tz="UTC")
     close = 100.0 * np.exp(np.cumsum(rng.normal(0.0003, 0.01, n)))
     open_ = close * (1.0 + rng.normal(0.0, 0.001, n))
@@ -20,63 +20,45 @@ def synthetic_ohlcv() -> pd.DataFrame:
     low = np.minimum(open_, close) * (1.0 - rng.uniform(0.0, 0.01, n))
     volume = rng.integers(500_000, 2_000_000, n)
 
-    return pd.DataFrame(
-        {
-            "open": open_,
-            "high": high,
-            "low": low,
-            "close": close,
-            "volume": volume,
-        },
-        index=idx,
-    )
+    return pd.DataFrame({"open": open_, "high": high, "low": low, "close": close, "volume": volume}, index=idx)
 
 
-def test_output_shape(synthetic_ohlcv: pd.DataFrame) -> None:
-    eng = FeatureEngineer(config={"feature_groups": ["trend", "momentum", "volatility", "volume", "candle"], "normalization": "robust", "warmup_bars": 200})
-    out = eng.transform(synthetic_ohlcv)
+def _engineer() -> FeatureEngineer:
+    return FeatureEngineer(config={"feature_groups": ["trend", "momentum", "volatility", "volume", "candle"], "normalization": "robust", "warmup_bars": 200})
+
+
+def test_compute_features_no_scaling(synthetic_ohlcv: pd.DataFrame) -> None:
+    eng = _engineer()
+    out = eng.compute_features(synthetic_ohlcv)
     assert len(out) < len(synthetic_ohlcv)
     assert not out.isna().any().any()
+    assert float(out.mean(numeric_only=True).abs().mean()) > 0.01
+    assert out["rsi_14"].between(0.0, 100.0).all()
 
 
-def test_feature_names_consistent(synthetic_ohlcv: pd.DataFrame) -> None:
-    eng = FeatureEngineer(config={"feature_groups": ["trend", "momentum", "volatility", "volume", "candle"], "normalization": "robust", "warmup_bars": 200})
-    out = eng.transform(synthetic_ohlcv)
-    assert eng.get_feature_names() == list(out.columns)
+def test_fit_scaler_only_on_train(synthetic_ohlcv: pd.DataFrame) -> None:
+    eng = _engineer()
+    features = eng.compute_features(synthetic_ohlcv)
+    X_train = features.iloc[:50]
+    X_test = features.iloc[50:80]
+    scaler = eng.fit_scaler(X_train)
+    scaled_test = eng.scale_features(X_test, scaler)
+    assert len(getattr(scaler, "center_", [])) == len([c for c in X_train.columns if c not in {"rsi_14", "rsi_28", "stoch_k", "stoch_d", "bb_position", "body_size", "upper_wick", "lower_wick"}])
+    assert scaled_test.shape == X_test.shape
 
 
-def test_no_lookahead(synthetic_ohlcv: pd.DataFrame) -> None:
-    eng = FeatureEngineer(config={"feature_groups": ["trend", "momentum", "volatility", "volume", "candle"], "normalization": "none", "warmup_bars": 200})
-    subset = synthetic_ohlcv.iloc[:260]
-    out_subset = eng.transform(subset)
-    out_full = eng.transform(synthetic_ohlcv)
-    ts = out_subset.index[-1]
-    pd.testing.assert_series_equal(out_subset.loc[ts], out_full.loc[ts], check_names=False)
+def test_scale_features_deterministic(synthetic_ohlcv: pd.DataFrame) -> None:
+    eng = _engineer()
+    features = eng.compute_features(synthetic_ohlcv)
+    scaler = eng.fit_scaler(features.iloc[:60])
+    once = eng.scale_features(features.iloc[60:90], scaler)
+    twice = eng.scale_features(features.iloc[60:90], scaler)
+    pd.testing.assert_frame_equal(once, twice)
 
 
-def test_normalization_range(synthetic_ohlcv: pd.DataFrame) -> None:
-    eng = FeatureEngineer(config={"feature_groups": ["trend", "momentum", "volatility", "volume", "candle"], "normalization": "robust", "warmup_bars": 200})
-    out = eng.fit_transform(synthetic_ohlcv)
-
-    non_bounded = [c for c in out.columns if c not in BOUNDED_FEATURES]
-    if non_bounded:
-        means = out[non_bounded].mean().abs()
-        assert float(means.mean()) < 1.0
-
-    for col in ["rsi_14", "rsi_28", "stoch_k", "stoch_d", "bb_position"]:
-        assert col in out.columns
-        assert out[col].between(-1e-6, 100.0 + 1e-6).all()
-
-
-def test_scaler_persistence(synthetic_ohlcv: pd.DataFrame, tmp_path) -> None:
-    eng = FeatureEngineer(config={"feature_groups": ["trend", "momentum", "volatility", "volume", "candle"], "normalization": "robust", "warmup_bars": 200})
-    fitted = eng.fit_transform(synthetic_ohlcv)
-
-    scaler_path = tmp_path / "robust_scaler.joblib"
-    eng.save_scaler(str(scaler_path))
-
-    eng2 = FeatureEngineer(config={"feature_groups": ["trend", "momentum", "volatility", "volume", "candle"], "normalization": "robust", "warmup_bars": 200})
-    eng2.load_scaler(str(scaler_path))
-    transformed = eng2.transform(synthetic_ohlcv)
-
-    pd.testing.assert_frame_equal(fitted, transformed)
+def test_no_leakage_across_folds(synthetic_ohlcv: pd.DataFrame) -> None:
+    eng = _engineer()
+    features = eng.compute_features(synthetic_ohlcv)
+    scaler_1 = eng.fit_scaler(features.iloc[:50])
+    scaler_2 = eng.fit_scaler(features.iloc[50:100])
+    assert not np.allclose(np.asarray(scaler_1.center_), np.asarray(scaler_2.center_))

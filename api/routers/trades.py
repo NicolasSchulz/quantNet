@@ -34,6 +34,7 @@ def list_trades(
     symbol: Optional[str] = None,
     direction: Optional[str] = None,
     status: Optional[str] = None,
+    asset_class: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     strategy: Optional[str] = None,
@@ -45,6 +46,7 @@ def list_trades(
         symbol=symbol,
         direction=direction,
         status=status,
+        asset_class=asset_class,
         start_date=start_date,
         end_date=end_date,
         strategy=strategy,
@@ -53,8 +55,8 @@ def list_trades(
 
 
 @router.get("/summary", response_model=TradesSummary)
-def trades_summary() -> dict[str, float]:
-    summary = get_trade_summary()
+def trades_summary(asset_class: Optional[str] = None) -> dict[str, float]:
+    summary = get_trade_summary(filter_trades(load_trades(), asset_class=asset_class))
     return {
         "open": int(summary["open"]),
         "closed": int(summary["closed"]),

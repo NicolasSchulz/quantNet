@@ -13,3 +13,13 @@ const variantClasses: Record<Variant, string> = {
 export function StatusBadge({ label, variant }: { label: string; variant: Variant }) {
   return <span className={cn("inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide", variantClasses[variant])}>{label}</span>
 }
+
+export function AssetClassBadge({ assetClass }: { assetClass: "equity" | "crypto" }) {
+  const style =
+    assetClass === "crypto"
+      ? "border-orange-400/30 bg-orange-400/10 text-orange-300"
+      : "border-sky-400/30 bg-sky-400/10 text-sky-300"
+  const label = assetClass === "crypto" ? "crypto" : "equity"
+  const icon = assetClass === "crypto" ? "🔶" : "●"
+  return <span className={cn("inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide", style)}>{icon} {label}</span>
+}

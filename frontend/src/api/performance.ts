@@ -12,6 +12,7 @@ export interface PerformanceFilters {
   end_date?: string
   symbol?: string
   strategy?: string
+  asset_class?: "equity" | "crypto"
 }
 
 export const fetchTradingStats = async (filters: PerformanceFilters) => {
@@ -19,22 +20,22 @@ export const fetchTradingStats = async (filters: PerformanceFilters) => {
   return data
 }
 
-export const fetchEquityCurve = async (filters: Pick<PerformanceFilters, "start_date" | "end_date">) => {
+export const fetchEquityCurve = async (filters: Pick<PerformanceFilters, "start_date" | "end_date" | "asset_class">) => {
   const { data } = await apiClient.get<EquityCurveResponse>("/performance/equity-curve", { params: cleanParams(filters) })
   return data
 }
 
-export const fetchPnlDistribution = async () => {
-  const { data } = await apiClient.get<{ buckets: PnlDistributionBucket[] }>("/performance/pnl-distribution")
+export const fetchPnlDistribution = async (filters: Pick<PerformanceFilters, "asset_class">) => {
+  const { data } = await apiClient.get<{ buckets: PnlDistributionBucket[] }>("/performance/pnl-distribution", { params: cleanParams(filters) })
   return data
 }
 
-export const fetchPerformanceBySymbol = async () => {
-  const { data } = await apiClient.get<{ rows: SymbolPerformanceRow[] }>("/performance/by-symbol")
+export const fetchPerformanceBySymbol = async (filters: Pick<PerformanceFilters, "asset_class">) => {
+  const { data } = await apiClient.get<{ rows: SymbolPerformanceRow[] }>("/performance/by-symbol", { params: cleanParams(filters) })
   return data
 }
 
-export const fetchPerformanceByExitReason = async () => {
-  const { data } = await apiClient.get<{ rows: ExitReasonPerformanceRow[] }>("/performance/by-exit-reason")
+export const fetchPerformanceByExitReason = async (filters: Pick<PerformanceFilters, "asset_class">) => {
+  const { data } = await apiClient.get<{ rows: ExitReasonPerformanceRow[] }>("/performance/by-exit-reason", { params: cleanParams(filters) })
   return data
 }

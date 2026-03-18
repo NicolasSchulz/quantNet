@@ -5,8 +5,12 @@ import {
   fetchDefaultModelMetrics,
   fetchFeatureImportance,
   fetchFoldResults,
+  fetchLossCurves,
   fetchModelList,
   fetchModelMetrics,
+  fetchTrainingProgress,
+  fetchThresholdAnalysis,
+  fetchTrainOOSComparison,
 } from "../api/model"
 
 export const useModelList = () =>
@@ -48,4 +52,34 @@ export const useFeatureImportance = (modelId: string | null) =>
     queryKey: ["feature-importance", modelId],
     queryFn: () => fetchFeatureImportance(modelId as string),
     enabled: Boolean(modelId),
+  })
+
+export const useTrainOOSComparison = (modelId: string | null) =>
+  useQuery({
+    queryKey: ["train-oos-comparison", modelId],
+    queryFn: () => fetchTrainOOSComparison(modelId as string),
+    enabled: Boolean(modelId),
+  })
+
+export const useThresholdAnalysis = (modelId: string | null) =>
+  useQuery({
+    queryKey: ["threshold-analysis", modelId],
+    queryFn: () => fetchThresholdAnalysis(modelId as string),
+    enabled: Boolean(modelId),
+  })
+
+export const useLossCurves = (modelId: string | null) =>
+  useQuery({
+    queryKey: ["loss-curves", modelId],
+    queryFn: () => fetchLossCurves(modelId as string),
+    enabled: Boolean(modelId),
+    staleTime: 300_000,
+    retry: 1,
+  })
+
+export const useTrainingProgress = () =>
+  useQuery({
+    queryKey: ["training-progress"],
+    queryFn: fetchTrainingProgress,
+    refetchInterval: 3000,
   })

@@ -16,11 +16,14 @@ class TripleBarrierLabeler:
     max_holding: int = 48
     min_return: float = 0.001
     handle_imbalance: str = "weights"
+    asset_class: str = "equity"
 
     def __post_init__(self) -> None:
         allowed = {"weights", "none", "undersample"}
         if self.handle_imbalance not in allowed:
             raise ValueError(f"handle_imbalance must be one of {sorted(allowed)}")
+        if self.asset_class not in {"equity", "crypto"}:
+            raise ValueError("asset_class must be 'equity' or 'crypto'")
 
     def label(self, data: pd.DataFrame) -> pd.Series:
         """Generate triple-barrier labels {-1, 0, +1}.

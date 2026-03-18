@@ -4,7 +4,23 @@ import { useEffect, useRef } from "react"
 import type { EquityPoint } from "../../types"
 import { colors } from "../../utils/colors"
 
-export function EquityCurve({ points, drawdown, height = 300 }: { points: EquityPoint[]; drawdown: EquityPoint[]; height?: number }) {
+interface ComparisonSeries {
+  label: string
+  color: string
+  points: EquityPoint[]
+}
+
+export function EquityCurve({
+  points,
+  drawdown,
+  height = 300,
+  comparisonSeries = [],
+}: {
+  points: EquityPoint[]
+  drawdown: EquityPoint[]
+  height?: number
+  comparisonSeries?: ComparisonSeries[]
+}) {
   const ref = useRef<HTMLDivElement | null>(null)
   const normalizeSeries = (series: EquityPoint[], valueKey: "equity" | "drawdown") => {
     const deduped = new Map<number, number>()
@@ -42,6 +58,14 @@ export function EquityCurve({ points, drawdown, height = 300 }: { points: Equity
     equitySeries.setData(normalizeSeries(points, "equity") as AreaData[])
     drawdownSeries.setData(normalizeSeries(drawdown, "drawdown"))
 
+    for (const series of comparisonSeries) {
+      const lineSeries = chart.addLineSeries({
+        color: series.color,
+        lineWidth: 2,
+      })
+      lineSeries.setData(normalizeSeries(series.points, "equity"))
+    }
+
     const resizeObserver = new ResizeObserver(() => {
       if (ref.current) {
         chart.applyOptions({ width: ref.current.clientWidth })
@@ -54,7 +78,7 @@ export function EquityCurve({ points, drawdown, height = 300 }: { points: Equity
       resizeObserver.disconnect()
       chart.remove()
     }
-  }, [drawdown, height, points])
+  }, [comparisonSeries, drawdown, height, points])
 
   return <div ref={ref} className="w-full" />
 }

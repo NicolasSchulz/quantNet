@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import math
 import os
-import random
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, time, timedelta, timezone
-from functools import lru_cache
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Literal, Optional
 from uuid import uuid4
@@ -16,12 +14,14 @@ import pandas as pd
 Direction = Literal["LONG", "SHORT"]
 TradeStatus = Literal["OPEN", "CLOSED", "CANCELLED"]
 ExitReason = Literal["TAKE_PROFIT", "STOP_LOSS", "TIME_BARRIER", "MANUAL"]
+AssetClass = Literal["equity", "crypto"]
 
 
 @dataclass(frozen=True)
 class TradeRecord:
     id: str
     symbol: str
+    asset_class: AssetClass
     direction: Direction
     status: TradeStatus
     entry_time: datetime
@@ -46,68 +46,6 @@ def is_live_mode() -> bool:
     return os.getenv("LIVE_MODE", "false").lower() == "true"
 
 
-@lru_cache(maxsize=1)
-def _mock_trades() -> tuple[TradeRecord, ...]:
-    rng = random.Random(42)
-    now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
-    symbols = ["SPY", "QQQ", "IWM", "AAPL", "MSFT"]
-    strategies = ["MLStrategy_SPY_v1", "MomentumSwing_v2", "MeanReversion_v1"]
-    trades: list[TradeRecord] = []
-    for idx in range(160):
-        symbol = rng.choice(symbols)
-        direction: Direction = rng.choice(["LONG", "SHORT"])
-        entry_time = now - timedelta(hours=6 * idx + rng.randint(1, 5))
-        is_open = idx < 6
-        status: TradeStatus = "OPEN" if is_open else ("CANCELLED" if idx % 27 == 0 else "CLOSED")
-        entry_price = round(rng.uniform(90, 540), 2)
-        qty = round(rng.uniform(10, 150), 2)
-        confidence = round(rng.uniform(0.35, 0.91), 2)
-        commission = round(rng.uniform(0.2, 3.5), 2)
-        slippage = round(rng.uniform(0.05, 1.2), 2)
-        exit_time: Optional[datetime] = None
-        exit_price: Optional[float] = None
-        pnl: Optional[float] = None
-        pnl_pct: Optional[float] = None
-        exit_reason: Optional[ExitReason] = None
-        if status == "CLOSED":
-            hold_hours = rng.randint(2, 72)
-            exit_time = entry_time + timedelta(hours=hold_hours)
-            raw_pct = rng.gauss(0.0065, 0.024)
-            if idx % 9 == 0:
-                raw_pct -= rng.uniform(0.01, 0.035)
-            pnl_pct = round(raw_pct, 4)
-            direction_mult = 1 if direction == "LONG" else -1
-            exit_price = round(entry_price * (1 + pnl_pct * direction_mult), 2)
-            pnl = round((exit_price - entry_price) * qty * direction_mult - commission - slippage, 2)
-            exit_reason = rng.choices(
-                ["TAKE_PROFIT", "STOP_LOSS", "TIME_BARRIER", "MANUAL"],
-                weights=[35, 28, 22, 15],
-                k=1,
-            )[0]
-        trades.append(
-            TradeRecord(
-                id=str(uuid4()),
-                symbol=symbol,
-                direction=direction,
-                status=status,
-                entry_time=entry_time,
-                exit_time=exit_time,
-                entry_price=entry_price,
-                exit_price=exit_price,
-                quantity=qty,
-                pnl=pnl,
-                pnl_pct=pnl_pct,
-                commission=commission,
-                slippage=slippage,
-                strategy=rng.choice(strategies),
-                signal_confidence=confidence if status != "CANCELLED" else None,
-                exit_reason=exit_reason,
-                notes="Synthetic development trade",
-            )
-        )
-    return tuple(sorted(trades, key=lambda trade: trade.entry_time, reverse=True))
-
-
 def _normalize_live_trades(raw_trades: object) -> list[TradeRecord]:
     normalized: list[TradeRecord] = []
     if isinstance(raw_trades, dict):
@@ -123,6 +61,7 @@ def _normalize_live_trades(raw_trades: object) -> list[TradeRecord]:
             TradeRecord(
                 id=str(order.get("id", f"live-{idx}")),
                 symbol=str(order.get("symbol", "UNKNOWN")),
+                asset_class="crypto" if str(order.get("symbol", "")).upper().endswith("USDT") else "equity",
                 direction="LONG" if qty >= 0 else "SHORT",
                 status="CLOSED" if status == "FILLED" else ("CANCELLED" if status == "CANCELED" else "OPEN"),
                 entry_time=datetime.now(timezone.utc),
@@ -144,9 +83,6 @@ def _normalize_live_trades(raw_trades: object) -> list[TradeRecord]:
 
 
 def load_trades() -> list[TradeRecord]:
-    if not is_live_mode():
-        return list(_mock_trades())
-
     parquet_path = Path("data/trades.parquet")
     if parquet_path.exists():
         frame = pd.read_parquet(parquet_path)
@@ -164,7 +100,7 @@ def load_trades() -> list[TradeRecord]:
             return trades
     except Exception:
         pass
-    return list(_mock_trades())
+    return []
 
 
 def _row_to_trade(row: pd.Series) -> TradeRecord:
@@ -172,6 +108,7 @@ def _row_to_trade(row: pd.Series) -> TradeRecord:
     return TradeRecord(
         id=str(payload.get("id", uuid4())),
         symbol=str(payload.get("symbol", "SPY")),
+        asset_class="crypto" if str(payload.get("symbol", "")).upper().endswith("USDT") else "equity",
         direction=str(payload.get("direction", "LONG")).upper(),  # type: ignore[arg-type]
         status=str(payload.get("status", "CLOSED")).upper(),  # type: ignore[arg-type]
         entry_time=pd.Timestamp(payload.get("entry_time")).to_pydatetime().astimezone(timezone.utc),
@@ -199,6 +136,7 @@ def filter_trades(
     symbol: Optional[str] = None,
     direction: Optional[str] = None,
     status: Optional[str] = None,
+    asset_class: Optional[str] = None,
     start_date: Optional[date] = None,
     end_date: Optional[date] = None,
     strategy: Optional[str] = None,
@@ -211,6 +149,8 @@ def filter_trades(
     if status:
         normalized_status = "CANCELLED" if status.upper() == "CANCELED" else status.upper()
         filtered = [trade for trade in filtered if trade.status == normalized_status]
+    if asset_class:
+        filtered = [trade for trade in filtered if trade.asset_class == asset_class.lower()]
     if start_date:
         start_dt = datetime.combine(start_date, time.min, tzinfo=timezone.utc)
         filtered = [trade for trade in filtered if trade.entry_time >= start_dt]

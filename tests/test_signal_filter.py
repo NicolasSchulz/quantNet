@@ -83,3 +83,18 @@ def test_signal_stats_complete() -> None:
     assert expected.issubset(set(stats.keys()))
     total = stats["pct_long"] + stats["pct_short"] + stats["pct_flat"]
     assert abs(total - 1.0) < 1e-6
+
+
+def test_optimize_threshold_returns_best_threshold() -> None:
+    probs = _sample_probabilities()
+    returns = pd.Series(np.linspace(-0.01, 0.02, len(probs)), index=probs.index)
+    sf = SignalFilter(min_confidence=0.45, min_holding_days=1, signal_smoothing=False)
+    threshold = sf.optimize_threshold(probs, returns, thresholds=[0.35, 0.45, 0.55])
+    assert threshold in {0.35, 0.45, 0.55}
+
+
+def test_set_threshold_tracks_source() -> None:
+    sf = SignalFilter(min_confidence=0.45)
+    sf.set_threshold(0.48, "val_optimized")
+    assert sf.min_confidence == 0.48
+    assert sf.threshold_source == "val_optimized"

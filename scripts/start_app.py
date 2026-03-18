@@ -12,7 +12,6 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-API_DIR = PROJECT_ROOT / "api"
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 REQUIRED_BACKEND_MODULES = ("fastapi", "uvicorn", "pydantic", "dotenv")
 BACKEND_BOOTSTRAP_PACKAGES = ("fastapi", "uvicorn", "pydantic", "python-dotenv")
@@ -137,7 +136,7 @@ def main() -> None:
     env["CORS_ORIGIN"] = f"http://{host}:{frontend_port}"
     _write_frontend_runtime_env(host, backend_port)
 
-    backend_cmd = [backend_python, "-m", "uvicorn", "main:app", "--host", host, "--port", str(backend_port)]
+    backend_cmd = [backend_python, "-m", "uvicorn", "api.main:app", "--host", host, "--port", str(backend_port)]
     frontend_cmd = ["npm", "run", "dev", "--workspace", "frontend", "--", "--host", host, "--port", str(frontend_port)]
 
     processes: list[subprocess.Popen[bytes]] = []
@@ -158,7 +157,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, shutdown)
 
     try:
-        processes.append(_start_process("backend", backend_cmd, API_DIR, env))
+        processes.append(_start_process("backend", backend_cmd, PROJECT_ROOT, env))
         processes.append(_start_process("frontend", frontend_cmd, PROJECT_ROOT, env))
         print(f"[ready] Frontend: http://{host}:{frontend_port}")
         print(f"[ready] Backend:  http://{host}:{backend_port}")

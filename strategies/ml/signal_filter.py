@@ -21,6 +21,7 @@ class SignalFilter:
     min_holding_days: int = 3
     max_positions_per_day: int = 1
     signal_smoothing: bool = True
+    threshold_source: str = "fixed"
 
     def __post_init__(self) -> None:
         self._last_stats: dict[str, float | int] = {
@@ -165,12 +166,12 @@ class SignalFilter:
         base["signals_filtered_by_regime"] = int(self._last_stats["signals_filtered_by_regime"])
         return base
 
-    def tune_confidence_threshold(
+    def optimize_threshold(
         self,
         probabilities: pd.DataFrame,
         returns: pd.Series,
         thresholds: list[float] | None = None,
-    ) -> pd.DataFrame:
+    ) -> float:
         if thresholds is None:
             thresholds = [0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
 
@@ -200,4 +201,34 @@ class SignalFilter:
 
         self.min_confidence = original
         out = pd.DataFrame(rows).sort_values("sharpe", ascending=False).reset_index(drop=True)
-        return out
+        if out.empty:
+            return float(original)
+        return float(out.iloc[0]["threshold"])
+
+    def tune_confidence_threshold(
+        self,
+        probabilities: pd.DataFrame,
+        returns: pd.Series,
+        thresholds: list[float] | None = None,
+    ) -> pd.DataFrame:
+        if thresholds is None:
+            thresholds = [0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
+        rows: list[dict[str, float]] = []
+        original = self.min_confidence
+        dummy_prices = pd.DataFrame(index=probabilities.index)
+        if self.regime_filter is not None:
+            dummy_prices[self.regime_filter.benchmark.upper()] = 1.0
+        for thr in thresholds:
+            self.min_confidence = float(thr)
+            sig = self.filter(probabilities=probabilities, prices=dummy_prices)
+            ret = returns.reindex(sig.index).fillna(0.0)
+            pnl = sig.shift(1).fillna(0.0) * ret
+            trades = sig.diff().abs().fillna(0.0)
+            rows.append({"threshold": float(thr), "sharpe": float(sharpe_ratio(pnl, risk_free_rate=0.0)), "n_trades": float((trades > 0).sum()), "pct_flat": float((sig == 0).mean())})
+        self.min_confidence = original
+        return pd.DataFrame(rows).sort_values("sharpe", ascending=False).reset_index(drop=True)
+
+    def set_threshold(self, threshold: float, source: str) -> None:
+        self.min_confidence = float(threshold)
+        self.threshold_source = str(source)
+        LOGGER.info("Threshold gesetzt: %.2f (Quelle: %s)", self.min_confidence, self.threshold_source)

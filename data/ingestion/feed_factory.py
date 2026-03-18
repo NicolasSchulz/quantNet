@@ -20,6 +20,13 @@ class MissingApiKeyError(RuntimeError):
 
 class FeedFactory:
     @staticmethod
+    def _is_crypto_symbol(symbol: str | None) -> bool:
+        if not symbol:
+            return False
+        upper = symbol.upper()
+        return upper.endswith("USDT") or upper.endswith("BTC")
+
+    @staticmethod
     def _load_settings(config: dict[str, Any] | None = None) -> dict[str, Any]:
         if config is not None:
             return config
@@ -27,7 +34,11 @@ class FeedFactory:
             return yaml.safe_load(f)
 
     @staticmethod
-    def create(source: str | None = None, config: dict[str, Any] | None = None) -> BaseFeed:
+    def create(
+        source: str | None = None,
+        config: dict[str, Any] | None = None,
+        symbol: str | None = None,
+    ) -> BaseFeed:
         settings = FeedFactory._load_settings(config)
         data_cfg = settings.get("data", {})
         feed_cfg = data_cfg.get("feed", {})
@@ -37,6 +48,18 @@ class FeedFactory:
         allow_primary_fallback = requested_source is None and source != "auto"
 
         load_dotenv("config/secrets.env")
+
+        if FeedFactory._is_crypto_symbol(symbol):
+            from data.ingestion.binance_feed import BinanceFeed
+
+            LOGGER.info("Auto-detected Crypto symbol -> BinanceFeed")
+            binance_cfg = data_cfg.get("binance", {})
+            return BinanceFeed(
+                api_key=os.getenv("BINANCE_API_KEY"),
+                api_secret=os.getenv("BINANCE_API_SECRET"),
+                testnet=bool(binance_cfg.get("testnet", False)),
+                max_retries=int(binance_cfg.get("max_retries", 3)),
+            )
 
         if source == "polygon":
             try:
@@ -89,14 +112,33 @@ class FeedFactory:
                 LOGGER.warning("Polygon nicht verfügbar (%s), fallback auf Yahoo Finance", exc)
             return YahooFeed()
 
-        raise ValueError("source must be one of: polygon, yahoo, auto")
+        if source == "binance":
+            from data.ingestion.binance_feed import BinanceFeed
+
+            binance_cfg = data_cfg.get("binance", {})
+            return BinanceFeed(
+                api_key=os.getenv("BINANCE_API_KEY"),
+                api_secret=os.getenv("BINANCE_API_SECRET"),
+                testnet=bool(binance_cfg.get("testnet", False)),
+                max_retries=int(binance_cfg.get("max_retries", 3)),
+            )
+
+        raise ValueError("source must be one of: polygon, yahoo, auto, binance")
+
+    @staticmethod
+    def create_for_symbol(
+        symbol: str,
+        config: dict[str, Any] | None = None,
+    ) -> BaseFeed:
+        return FeedFactory.create(source=None, config=config, symbol=symbol)
 
     @staticmethod
     def create_with_cache(
         source: str | None = None,
         config: dict[str, Any] | None = None,
+        symbol: str | None = None,
     ) -> tuple[BaseFeed, ParquetStore]:
         settings = FeedFactory._load_settings(config)
-        feed = FeedFactory.create(source=source, config=settings)
+        feed = FeedFactory.create(source=source, config=settings, symbol=symbol)
         store = ParquetStore(storage_path=settings["data"]["storage_path"])
         return feed, store

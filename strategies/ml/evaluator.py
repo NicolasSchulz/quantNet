@@ -85,6 +85,19 @@ class ModelEvaluator:
             "cost_drag_bps": total_cost_drag_bps,
         }
 
+    def quick_sharpe(
+        self,
+        predictions: pd.Series,
+        returns: pd.Series,
+        transaction_cost_bps: float = 7.0,
+    ) -> float:
+        metrics = self.compute_trading_metrics(
+            y_pred=predictions,
+            returns=returns,
+            transaction_cost_bps=transaction_cost_bps,
+        )
+        return float(metrics.get("strategy_sharpe", 0.0))
+
     def plot_results(
         self,
         wf_result: "WalkForwardResult",
@@ -150,18 +163,23 @@ class ModelEvaluator:
         fig.savefig(output_path / "walk_forward_results.png", dpi=160)
         plt.close(fig)
 
-    def overfitting_check(self, metrics_per_fold: pd.DataFrame) -> dict[str, float | str]:
-        # Handle empty metrics (no walk-forward folds generated)
+    def compute_stability_risk(self, metrics_per_fold: pd.DataFrame) -> dict[str, float | str]:
+        """Measure consistency of OOS performance over time.
+
+        HIGH means unstable performance across regimes, not necessarily overfitting.
+        """
         if metrics_per_fold.empty or len(metrics_per_fold) == 0:
             return {
                 "sharpe_mean": 0.0,
                 "sharpe_std": 0.0,
                 "sharpe_cv": 0.0,
                 "pct_profitable_folds": 0.0,
-                "overfitting_risk": "INSUFFICIENT_DATA",
+                "worst_fold_sharpe": 0.0,
+                "best_fold_sharpe": 0.0,
+                "stability_risk": "HIGH",
             }
-        
-        sharpe_col = "strategy_sharpe" if "strategy_sharpe" in metrics_per_fold.columns else "fold_sharpe"
+
+        sharpe_col = "oos_sharpe" if "oos_sharpe" in metrics_per_fold.columns else ("strategy_sharpe" if "strategy_sharpe" in metrics_per_fold.columns else "fold_sharpe")
         sharpe = metrics_per_fold[sharpe_col].astype(float)
 
         sharpe_mean = float(sharpe.mean()) if len(sharpe) else 0.0
@@ -181,12 +199,95 @@ class ModelEvaluator:
             "sharpe_std": sharpe_std,
             "sharpe_cv": float(sharpe_cv),
             "pct_profitable_folds": pct_profitable,
-            "overfitting_risk": risk,
+            "worst_fold_sharpe": float(sharpe.min()) if len(sharpe) else 0.0,
+            "best_fold_sharpe": float(sharpe.max()) if len(sharpe) else 0.0,
+            "stability_risk": risk,
+        }
+
+    def compute_overfitting_gap(
+        self,
+        train_metrics_per_fold: pd.DataFrame,
+        oos_metrics_per_fold: pd.DataFrame,
+    ) -> dict[str, float | str]:
+        """Measure true overfitting as the train-vs-OOS performance gap."""
+        if train_metrics_per_fold.empty or oos_metrics_per_fold.empty:
+            return {
+                "train_sharpe_mean": 0.0,
+                "oos_sharpe_mean": 0.0,
+                "sharpe_gap": 0.0,
+                "sharpe_gap_pct": 0.0,
+                "train_accuracy_mean": 0.0,
+                "oos_accuracy_mean": 0.0,
+                "accuracy_gap": 0.0,
+                "overfitting_verdict": "NONE",
+            }
+
+        train_sharpe_mean = float(train_metrics_per_fold["train_sharpe"].astype(float).mean())
+        oos_sharpe_mean = float(oos_metrics_per_fold["oos_sharpe"].astype(float).mean())
+        train_accuracy_mean = float(train_metrics_per_fold["train_accuracy"].astype(float).mean())
+        oos_accuracy_mean = float(oos_metrics_per_fold["oos_accuracy"].astype(float).mean())
+
+        sharpe_gap = train_sharpe_mean - oos_sharpe_mean
+        sharpe_gap_pct = (sharpe_gap / max(abs(train_sharpe_mean), 1e-12)) * 100.0
+        accuracy_gap = train_accuracy_mean - oos_accuracy_mean
+
+        abs_gap_pct = abs(float(sharpe_gap_pct))
+        if abs_gap_pct < 15.0:
+            verdict = "NONE"
+        elif abs_gap_pct < 30.0:
+            verdict = "MILD"
+        elif abs_gap_pct < 50.0:
+            verdict = "MODERATE"
+        else:
+            verdict = "SEVERE"
+
+        return {
+            "train_sharpe_mean": float(train_sharpe_mean),
+            "oos_sharpe_mean": float(oos_sharpe_mean),
+            "sharpe_gap": float(sharpe_gap),
+            "sharpe_gap_pct": float(sharpe_gap_pct),
+            "train_accuracy_mean": float(train_accuracy_mean),
+            "oos_accuracy_mean": float(oos_accuracy_mean),
+            "accuracy_gap": float(accuracy_gap),
+            "overfitting_verdict": verdict,
+        }
+
+    def compute_threshold_stability(
+        self,
+        threshold_per_fold: pd.Series,
+        source: str = "fixed",
+    ) -> dict[str, Any]:
+        if threshold_per_fold.empty:
+            return {
+                "threshold_per_fold": [],
+                "mean": 0.0,
+                "std": 0.0,
+                "min_threshold": 0.0,
+                "max_threshold": 0.0,
+                "is_stable": True,
+                "threshold_source": source,
+            }
+
+        std = float(threshold_per_fold.std(ddof=0))
+        if std > 0.1:
+            LOGGER.warning("Threshold instabil ueber Folds – Signal-Regeln reagieren stark auf Marktregime")
+        return {
+            "threshold_per_fold": [
+                {"fold_id": int(idx), "threshold": float(value)}
+                for idx, value in threshold_per_fold.items()
+            ],
+            "mean": float(threshold_per_fold.mean()),
+            "std": std,
+            "min_threshold": float(threshold_per_fold.min()),
+            "max_threshold": float(threshold_per_fold.max()),
+            "is_stable": bool(std < 0.1),
+            "threshold_source": source,
         }
 
     def generate_report(self, wf_result: "WalkForwardResult", trading_metrics: dict[str, float]) -> str:
         metrics = wf_result.aggregate_metrics
-        oc = self.overfitting_check(wf_result.metrics_per_fold)
+        stability = self.compute_stability_risk(wf_result.metrics_per_fold)
+        overfit = self.compute_overfitting_gap(wf_result.train_metrics_per_fold, wf_result.metrics_per_fold)
 
         if wf_result.predictions.empty:
             start = "N/A"
@@ -200,7 +301,7 @@ class ModelEvaluator:
             worst = None
             best = None
         else:
-            sharpe_col = "strategy_sharpe" if "strategy_sharpe" in wf_result.metrics_per_fold.columns else "fold_sharpe"
+            sharpe_col = "oos_sharpe" if "oos_sharpe" in wf_result.metrics_per_fold.columns else ("strategy_sharpe" if "strategy_sharpe" in wf_result.metrics_per_fold.columns else "fold_sharpe")
             worst_idx = wf_result.metrics_per_fold[sharpe_col].idxmin()
             best_idx = wf_result.metrics_per_fold[sharpe_col].idxmax()
             worst = wf_result.metrics_per_fold.loc[worst_idx]
@@ -233,13 +334,23 @@ Anzahl Trades:   {int(trading_metrics.get('n_trades', 0))}
 Win Rate:        {trading_metrics.get('win_rate', 0.0):.1%}
 Profit Factor:   {trading_metrics.get('profit_factor', 0.0):.2f}
 
-OVERFITTING CHECK
+STABILITAETS-ANALYSE (OOS ueber Zeit)
 ──────────────────────────────────────
-Fold Sharpe Mean:   {oc['sharpe_mean']:.2f}
-Fold Sharpe Std:    {oc['sharpe_std']:.2f}
-Schlechtester Fold: {'N/A (Insufficient Folds)' if worst is None else f"{worst.get('strategy_sharpe', worst.get('fold_sharpe', 0.0)):.2f} ({worst['test_start'].date().isoformat()}→{worst['test_end'].date().isoformat()})"}
-Bester Fold:        {'N/A (Insufficient Folds)' if best is None else f"{best.get('strategy_sharpe', best.get('fold_sharpe', 0.0)):.2f} ({best['test_start'].date().isoformat()}→{best['test_end'].date().isoformat()})"}
-Overfitting Risk:   {oc['overfitting_risk']}
+Sharpe CV:          {stability['sharpe_cv']:.2f}
+Profitable Folds:   {stability['pct_profitable_folds']:.1%}
+Schlechtester Fold: {'N/A (Insufficient Folds)' if worst is None else f"{worst.get('oos_sharpe', worst.get('strategy_sharpe', worst.get('fold_sharpe', 0.0))):.2f} ({worst['test_start'].date().isoformat()}→{worst['test_end'].date().isoformat()})"}
+Bester Fold:        {'N/A (Insufficient Folds)' if best is None else f"{best.get('oos_sharpe', best.get('strategy_sharpe', best.get('fold_sharpe', 0.0))):.2f} ({best['test_start'].date().isoformat()}→{best['test_end'].date().isoformat()})"}
+Stability Risk:     {stability['stability_risk']}
+
+OVERFITTING-ANALYSE (Train vs OOS)
+──────────────────────────────────────
+Train Sharpe:       {overfit['train_sharpe_mean']:.2f}
+OOS Sharpe:         {overfit['oos_sharpe_mean']:.2f}
+Gap:                {overfit['sharpe_gap']:.2f} ({overfit['sharpe_gap_pct']:.1f}%)
+Train Accuracy:     {overfit['train_accuracy_mean']:.3f}
+OOS Accuracy:       {overfit['oos_accuracy_mean']:.3f}
+Accuracy Gap:       {overfit['accuracy_gap']:.3f}
+Overfitting:        {overfit['overfitting_verdict']}
 ══════════════════════════════════════════
 """.strip()
         return report

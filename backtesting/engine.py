@@ -68,9 +68,16 @@ def run(
     rebalance_frequency: str = "M",
     sizing_method: str = "equal_weight",
     volatility_sizer: VolatilityParitySizer | None = None,
+    trading_hours: str | None = None,
+    rebalance_freq: str | None = None,
 ) -> BacktestResult:
     if not data:
         raise ValueError("Backtest data cannot be empty")
+
+    inferred_asset_class = str(next(iter(data.values())).get("asset_class", pd.Series(["equity"])).iloc[0]).lower()
+    effective_trading_hours = trading_hours or ("24/7" if inferred_asset_class == "crypto" else "market")
+    _ = effective_trading_hours
+    effective_rebalance = rebalance_freq or rebalance_frequency
 
     open_prices = pd.concat(
         {sym: df["open"].astype(float) for sym, df in data.items()}, axis=1
@@ -112,7 +119,7 @@ def run(
     returns = close_prices.pct_change().fillna(0.0)
     warmup_bars = int(strategy.warmup_bars()) if hasattr(strategy, "warmup_bars") else 0
 
-    rebal_dates = set(_rebalance_dates(close_prices.index, rebalance_frequency))
+    rebal_dates = set(_rebalance_dates(close_prices.index, effective_rebalance))
     sizer = volatility_sizer or VolatilityParitySizer()
 
     shares = {sym: 0.0 for sym in close_prices.columns}

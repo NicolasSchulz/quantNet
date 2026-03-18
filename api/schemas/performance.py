@@ -41,6 +41,9 @@ class EquityPoint(BaseModel):
 class EquityCurveResponse(BaseModel):
     points: list[EquityPoint]
     benchmark: list[EquityPoint]
+    equity_points: list[EquityPoint] = []
+    crypto_points: list[EquityPoint] = []
+    combined_points: list[EquityPoint] = []
 
 
 class PnlDistributionBucket(BaseModel):
@@ -55,6 +58,7 @@ class PnlDistributionResponse(BaseModel):
 
 class SymbolPerformanceRow(BaseModel):
     symbol: str
+    asset_class: str
     trades: int
     win_rate: float
     avg_pnl: float

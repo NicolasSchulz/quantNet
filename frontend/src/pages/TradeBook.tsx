@@ -5,7 +5,7 @@ import { ErrorState } from "../components/ui/ErrorState"
 import { LoadingSpinner } from "../components/ui/LoadingSpinner"
 import { MetricCard } from "../components/ui/MetricCard"
 import { MetricCardGrid } from "../components/ui/MetricCardGrid"
-import { StatusBadge } from "../components/ui/StatusBadge"
+import { AssetClassBadge, StatusBadge } from "../components/ui/StatusBadge"
 import { TradeDetailModal } from "../components/ui/TradeDetailModal"
 import { useTradeSummary, useTrades } from "../hooks/useTrades"
 import type { Trade } from "../types"
@@ -16,6 +16,7 @@ type SortKey = keyof Pick<Trade, "symbol" | "direction" | "status" | "entry_time
 export function TradeBook() {
   const [filters, setFilters] = useState({
     symbol: "",
+    asset_class: "" as "" | "equity" | "crypto",
     direction: "" as "" | "LONG" | "SHORT",
     status: "" as "" | "OPEN" | "CLOSED",
     start_date: "",
@@ -29,7 +30,7 @@ export function TradeBook() {
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null)
 
   const tradesQuery = useTrades(filters)
-  const summaryQuery = useTradeSummary()
+  const summaryQuery = useTradeSummary({ asset_class: filters.asset_class })
 
   const rows = useMemo(() => {
     const trades = [...(tradesQuery.data?.trades ?? [])]
@@ -46,11 +47,23 @@ export function TradeBook() {
   }, [sortDirection, sortKey, tradesQuery.data?.trades])
 
   const symbols = useMemo(() => Array.from(new Set((tradesQuery.data?.trades ?? []).map((trade) => trade.symbol))).sort(), [tradesQuery.data?.trades])
+  const equitySymbols = useMemo(() => symbols.filter((symbol) => !symbol.endsWith("USDT")), [symbols])
+  const cryptoSymbols = useMemo(() => symbols.filter((symbol) => symbol.endsWith("USDT")), [symbols])
   const strategies = useMemo(() => Array.from(new Set((tradesQuery.data?.trades ?? []).map((trade) => trade.strategy))).sort(), [tradesQuery.data?.trades])
 
   const columns: Column<Trade>[] = [
     { key: "id", header: "#", render: (row) => row.id.slice(0, 8) },
-    { key: "symbol", header: "Symbol", sortable: true, render: (row) => row.symbol },
+    {
+      key: "symbol",
+      header: "Symbol",
+      sortable: true,
+      render: (row) => (
+        <div className="flex items-center gap-2">
+          <span>{row.symbol}</span>
+          <AssetClassBadge assetClass={row.asset_class} />
+        </div>
+      ),
+    },
     {
       key: "direction",
       header: "Direction",
@@ -130,9 +143,15 @@ export function TradeBook() {
   }
 
   const summary = summaryQuery.data
+  const hasRealTradeData = (tradesQuery.data?.total ?? 0) > 0
 
   return (
     <div className="space-y-6">
+      {!hasRealTradeData ? (
+        <section className="rounded-2xl border border-dashed border-border bg-secondary p-5 text-sm text-textSecondary">
+          Keine echten Trade-Daten gefunden. Diese Ansicht bleibt als Platzhalter sichtbar, bis `data/trades.parquet` oder ein Live-/Paper-Trade-Feed echte Ausfuehrungen liefert.
+        </section>
+      ) : null}
       <MetricCardGrid columns={4}>
         <MetricCard title="Offene Positionen" value={`${summary?.open ?? 0}`} tone="neutral" subtitle="Aktive Trades im Book" />
         <MetricCard title="Heutige P&L" value={formatCurrency(summary?.today_pnl)} tone={(summary?.today_pnl ?? 0) >= 0 ? "positive" : "negative"} subtitle={formatPercent((summary?.today_pnl ?? 0) / 10_000)} />
@@ -144,11 +163,21 @@ export function TradeBook() {
         <div className="grid gap-3 xl:grid-cols-6 md:grid-cols-3">
           <select className="rounded-xl border border-border bg-primary px-3 py-2 text-sm" value={filters.symbol} onChange={(event) => setFilter("symbol", event.target.value)}>
             <option value="">Alle Symbole</option>
-            {symbols.map((symbol) => (
+            {equitySymbols.map((symbol) => (
               <option key={symbol} value={symbol}>
                 {symbol}
               </option>
             ))}
+            {cryptoSymbols.map((symbol) => (
+              <option key={symbol} value={symbol}>
+                {symbol}
+              </option>
+            ))}
+          </select>
+          <select className="rounded-xl border border-border bg-primary px-3 py-2 text-sm" value={filters.asset_class} onChange={(event) => setFilter("asset_class", event.target.value)}>
+            <option value="">Alle Asset-Klassen</option>
+            <option value="equity">Equities</option>
+            <option value="crypto">Crypto</option>
           </select>
           <select className="rounded-xl border border-border bg-primary px-3 py-2 text-sm" value={filters.direction} onChange={(event) => setFilter("direction", event.target.value)}>
             <option value="">Alle Richtungen</option>
@@ -178,6 +207,7 @@ export function TradeBook() {
             onClick={() =>
               setFilters({
                 symbol: "",
+                asset_class: "",
                 direction: "",
                 status: "",
                 start_date: "",

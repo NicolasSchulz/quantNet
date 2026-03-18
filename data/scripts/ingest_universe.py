@@ -17,6 +17,7 @@ import yaml
 from data.ingestion.feed_factory import FeedFactory
 from data.normalizer import normalize_ohlcv
 from data.storage.parquet_store import ParquetStore
+from data.universes.crypto_universe import CryptoUniverse
 from data.universes.etf_universe import EtfUniverse
 
 LOGGER = logging.getLogger(__name__)
@@ -28,10 +29,11 @@ def load_settings() -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Ingest ETF universe to parquet cache")
+    parser = argparse.ArgumentParser(description="Ingest asset universes to parquet cache")
     parser.add_argument("--start", default=None)
     parser.add_argument("--end", default=None)
     parser.add_argument("--symbol", nargs="*", default=None)
+    parser.add_argument("--universe", default="etf", choices=["etf", "crypto", "all"])
     parser.add_argument("--limit", type=int, default=None, help="Limit to first N symbols (default: all)")
     args = parser.parse_args()
 
@@ -43,13 +45,21 @@ def main() -> None:
     end = pd.Timestamp(args.end) if args.end else pd.Timestamp.utcnow()
     start = pd.Timestamp(args.start) if args.start else (end - pd.DateOffset(years=default_years))
 
-    symbols = [s.upper() for s in args.symbol] if args.symbol else EtfUniverse().get_symbols()
-    
-    # Limit symbols if requested
+    etf_symbols = EtfUniverse().get_symbols()
+    crypto_universe = CryptoUniverse()
+    crypto_symbols = crypto_universe.get_symbols()
+    if args.symbol:
+        symbols = [s.upper() for s in args.symbol]
+    elif args.universe == "crypto":
+        symbols = crypto_symbols
+    elif args.universe == "all":
+        symbols = etf_symbols + crypto_symbols
+    else:
+        symbols = etf_symbols
+
     if args.limit:
         symbols = symbols[:args.limit]
-
-    feed, store = FeedFactory.create_with_cache(config=settings)
+    store = ParquetStore(storage_path=settings["data"]["storage_path"])
 
     cached = sum(1 for s in symbols if store.exists(s, interval))
     LOGGER.info("Cache Status: %d/%d Symbole vorhanden", cached, len(symbols))
@@ -62,13 +72,21 @@ def main() -> None:
             if store.exists(symbol, interval):
                 continue
             LOGGER.info("[%d/%d] Lade %s", i, len(symbols), symbol)
+            asset_class = "crypto" if symbol.endswith("USDT") else "equity"
+            history = crypto_universe.get_available_history().get(symbol)
+            effective_start = start
+            if asset_class == "crypto" and history is not None:
+                available_start = pd.Timestamp(history, tz="UTC")
+                effective_start = max(start, available_start)
+                LOGGER.info("%s: verfuegbar ab %s, lade ab %s", symbol, history, effective_start.date().isoformat())
+            feed = FeedFactory.create_for_symbol(symbol, config=settings)
             raw = feed.fetch_historical(
                 symbol=symbol,
-                start=start.date().isoformat(),
+                start=effective_start.date().isoformat(),
                 end=end.date().isoformat(),
                 interval=interval,
             )
-            normalized = normalize_ohlcv(raw, symbol=symbol, asset_class="etf", interval=interval)
+            normalized = normalize_ohlcv(raw, symbol=symbol, asset_class=asset_class, interval=interval)
             store.save(normalized, symbol=symbol, interval=interval)
             loaded_rows += len(normalized)
         except Exception as exc:

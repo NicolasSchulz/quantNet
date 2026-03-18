@@ -41,6 +41,8 @@ class ModelRegistry:
         feature_version: str,
         walk_forward_metrics: dict[str, Any],
         trained_at: str,
+        analysis: dict[str, Any] | None = None,
+        loss_curves_path: str | None = None,
     ) -> None:
         payload = self._read()
         metrics = {
@@ -54,6 +56,8 @@ class ModelRegistry:
             "feature_version": feature_version,
             "trained_at": trained_at,
             "metrics": metrics,
+            "analysis": analysis or {},
+            "loss_curves_path": loss_curves_path,
             "status": "active",
         }
         self._write(payload)

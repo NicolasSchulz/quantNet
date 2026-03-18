@@ -23,8 +23,7 @@ def _closed_trades(trades: list[TradeRecord]) -> list[TradeRecord]:
 def _equity_dataframe(trades: list[TradeRecord]) -> pd.DataFrame:
     closed = _closed_trades(trades)
     if not closed:
-        now = datetime.now(timezone.utc)
-        return pd.DataFrame({"equity": [100_000.0], "drawdown": [0.0]}, index=pd.DatetimeIndex([now]))
+        return pd.DataFrame(columns=["equity", "drawdown"], index=pd.DatetimeIndex([], tz="UTC"))
     rows = sorted(((trade.exit_time or trade.entry_time, trade.pnl or 0.0) for trade in closed), key=lambda row: row[0])
     timestamps = pd.DatetimeIndex([row[0] for row in rows])
     pnl = pd.Series([row[1] for row in rows], index=timestamps, dtype=float)
@@ -41,11 +40,13 @@ def get_trading_stats(
     end_date: Optional[datetime] = None,
     symbol: Optional[str] = None,
     strategy: Optional[str] = None,
+    asset_class: Optional[str] = None,
 ) -> dict[str, object]:
     trades = filter_trades(
         load_trades(),
         symbol=symbol,
         strategy=strategy,
+        asset_class=asset_class,
         start_date=start_date.date() if start_date else None,
         end_date=end_date.date() if end_date else None,
     )
@@ -86,16 +87,28 @@ def get_trading_stats(
 def get_equity_curve(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    asset_class: Optional[str] = None,
 ) -> dict[str, list[dict[str, object]]]:
     trades = filter_trades(
         load_trades(),
+        asset_class=asset_class,
         start_date=start_date.date() if start_date else None,
         end_date=end_date.date() if end_date else None,
     )
     equity_df = _equity_dataframe(trades)
+    equity_only_df = _equity_dataframe(filter_trades(trades, asset_class="equity"))
+    crypto_only_df = _equity_dataframe(filter_trades(trades, asset_class="crypto"))
     points = [
         {"timestamp": timestamp.to_pydatetime(), "equity": round(row["equity"], 2), "drawdown": round(row["drawdown"], 4)}
         for timestamp, row in equity_df.iterrows()
+    ]
+    equity_points = [
+        {"timestamp": timestamp.to_pydatetime(), "equity": round(row["equity"], 2), "drawdown": round(row["drawdown"], 4)}
+        for timestamp, row in equity_only_df.iterrows()
+    ]
+    crypto_points = [
+        {"timestamp": timestamp.to_pydatetime(), "equity": round(row["equity"], 2), "drawdown": round(row["drawdown"], 4)}
+        for timestamp, row in crypto_only_df.iterrows()
     ]
     benchmark: list[dict[str, object]] = []
     if points:
@@ -109,11 +122,17 @@ def get_equity_curve(
                     "drawdown": round(min(0.0, math.sin(idx / 4.0) * 0.03), 4),
                 }
             )
-    return {"points": points, "benchmark": benchmark}
+    return {
+        "points": points,
+        "benchmark": benchmark,
+        "equity_points": equity_points,
+        "crypto_points": crypto_points,
+        "combined_points": points,
+    }
 
 
-def get_pnl_distribution() -> dict[str, list[dict[str, object]]]:
-    closed = _closed_trades(load_trades())
+def get_pnl_distribution(asset_class: Optional[str] = None) -> dict[str, list[dict[str, object]]]:
+    closed = _closed_trades(filter_trades(load_trades(), asset_class=asset_class))
     values = [trade.pnl_pct or 0.0 for trade in closed]
     if not values:
         return {"buckets": []}
@@ -132,9 +151,9 @@ def get_pnl_distribution() -> dict[str, list[dict[str, object]]]:
     return {"buckets": buckets}
 
 
-def get_performance_by_symbol() -> dict[str, list[dict[str, object]]]:
+def get_performance_by_symbol(asset_class: Optional[str] = None) -> dict[str, list[dict[str, object]]]:
     grouped: dict[str, list[TradeRecord]] = defaultdict(list)
-    for trade in load_trades():
+    for trade in filter_trades(load_trades(), asset_class=asset_class):
         grouped[trade.symbol].append(trade)
     rows = []
     for symbol, trades in grouped.items():
@@ -145,6 +164,7 @@ def get_performance_by_symbol() -> dict[str, list[dict[str, object]]]:
         rows.append(
             {
                 "symbol": symbol,
+                "asset_class": trades[0].asset_class if trades else "equity",
                 "trades": len(closed),
                 "win_rate": round(sum(1 for trade in closed if (trade.pnl or 0.0) > 0) / len(closed), 4) if closed else 0.0,
                 "avg_pnl": round(float(np.mean([trade.pnl_pct for trade in closed])) if closed else 0.0, 4),
@@ -156,9 +176,9 @@ def get_performance_by_symbol() -> dict[str, list[dict[str, object]]]:
     return {"rows": rows}
 
 
-def get_performance_by_exit_reason() -> dict[str, list[dict[str, object]]]:
+def get_performance_by_exit_reason(asset_class: Optional[str] = None) -> dict[str, list[dict[str, object]]]:
     grouped: dict[str, list[TradeRecord]] = defaultdict(list)
-    for trade in _closed_trades(load_trades()):
+    for trade in _closed_trades(filter_trades(load_trades(), asset_class=asset_class)):
         grouped[trade.exit_reason or "UNKNOWN"].append(trade)
     rows = []
     for exit_reason, trades in grouped.items():

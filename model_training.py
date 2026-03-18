@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import itertools
+import json
 import logging
 import subprocess
 import sys
@@ -20,8 +20,11 @@ from data.storage.parquet_store import ParquetStore
 from strategies.ml.evaluator import ModelEvaluator
 from strategies.ml.feature_engineer import FeatureEngineer
 from strategies.ml.labeler import TripleBarrierLabeler
+from strategies.ml.nested_walk_forward import NestedWalkForwardConfig, NestedWalkForwardValidator
 from strategies.ml.models.lgbm_classifier import LGBMClassifier
 from strategies.ml.model_registry import ModelRegistry
+from strategies.ml.signal_filter import SignalFilter
+from strategies.ml.training_progress import TrainingProgressTracker
 from strategies.ml.walk_forward import WalkForwardConfig, WalkForwardValidator
 
 LOGGER = logging.getLogger(__name__)
@@ -34,6 +37,7 @@ def load_settings(path: str = "config/settings.yaml") -> dict[str, Any]:
 
 def _ensure_features(
     symbol: str,
+    asset_class: str,
     feature_version: str,
     settings: dict[str, Any],
     start: str,
@@ -50,6 +54,8 @@ def _ensure_features(
         "feature_pipeline.py",
         "--symbol",
         symbol,
+        "--asset-class",
+        asset_class,
         "--start",
         start,
         "--end",
@@ -61,15 +67,18 @@ def _ensure_features(
 def _load_ohlcv(symbol: str, start: pd.Timestamp, end: pd.Timestamp, settings: dict[str, Any]) -> pd.DataFrame:
     interval = settings["data"]["intervals"]["primary"]
     store = ParquetStore(storage_path=settings["data"]["storage_path"])
+    asset_class = "crypto" if symbol.upper().endswith("USDT") else "equity"
+    start_str = pd.Timestamp(start).date().isoformat()
+    end_str = pd.Timestamp(end).date().isoformat()
 
     if store.exists(symbol, interval):
         ohlcv = store.load(symbol=symbol, interval=interval, start=start, end=end)
         if not ohlcv.empty:
             return ohlcv
 
-    feed = FeedFactory.create(config=settings)
-    raw = feed.fetch_historical(symbol=symbol, start=start, end=end, interval=interval)
-    ohlcv = normalize_ohlcv(raw, symbol=symbol, asset_class="etf", interval=interval)
+    feed = FeedFactory.create(config=settings, symbol=symbol)
+    raw = feed.fetch_historical(symbol=symbol, start=start_str, end=end_str, interval=interval)
+    ohlcv = normalize_ohlcv(raw, symbol=symbol, asset_class=asset_class, interval=interval)
     store.save(ohlcv, symbol=symbol, interval=interval)
 
     return ohlcv
@@ -80,59 +89,19 @@ def _load_ohlcv_returns(symbol: str, start: pd.Timestamp, end: pd.Timestamp, set
     return ohlcv["close"].astype(float).pct_change().fillna(0.0)
 
 
-def _run_hyperparameter_search(
+def _split_final_train_validation(
     X: pd.DataFrame,
     y: pd.Series,
-    returns: pd.Series,
-    class_weights: dict[int, float] | None,
-    base_params: dict[str, Any],
-    config: WalkForwardConfig,
-    output_dir: Path,
-    transaction_cost_bps: float,
-) -> pd.DataFrame:
-    evaluator = ModelEvaluator()
-
-    param_grid = {
-        "max_depth": [3, 4, 6],
-        "num_leaves": [7, 15, 31],
-        "learning_rate": [0.01, 0.05],
-        "min_child_samples": [30, 50, 100],
-    }
-
-    rows: list[dict[str, Any]] = []
-    keys = list(param_grid.keys())
-    for values in itertools.product(*[param_grid[k] for k in keys]):
-        params = dict(base_params)
-        params.update(dict(zip(keys, values)))
-
-        validator = WalkForwardValidator(
-            model_class=LGBMClassifier,
-            model_params=params,
-            config=config,
-        )
-        wf_result = validator.run(X, y, class_weights=class_weights)
-        trading = evaluator.compute_trading_metrics(
-            y_pred=wf_result.predictions,
-            returns=returns,
-            transaction_cost_bps=transaction_cost_bps,
-        )
-        rows.append(
-            {
-                **dict(zip(keys, values)),
-                "oos_sharpe": trading["strategy_sharpe"],
-                "oos_cagr": trading["strategy_cagr"],
-                "oos_max_dd": trading["strategy_max_drawdown"],
-                "n_folds": len(wf_result.folds),
-            }
-        )
-
-    out = pd.DataFrame(rows).sort_values("oos_sharpe", ascending=False).reset_index(drop=True)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    out.to_csv(output_dir / "hyperparameter_search.csv", index=False)
-    LOGGER.info("Saved hyperparameter search to %s", output_dir / "hyperparameter_search.csv")
-    if not out.empty:
-        LOGGER.info("Best params by OOS Sharpe: %s", out.iloc[0].to_dict())
-    return out
+    val_fraction: float,
+    val_purge_days: int,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+    val_days = max(1, int(round(max(len(X), 1) * val_fraction)))
+    val_start_idx = max(0, len(X) - val_days)
+    val_start = X.index[val_start_idx]
+    train_end = val_start - pd.Timedelta(days=val_purge_days)
+    train_mask = X.index <= train_end
+    val_mask = X.index >= val_start
+    return X.loc[train_mask], y.loc[train_mask], X.loc[val_mask], y.loc[val_mask]
 
 
 def main() -> None:
@@ -140,22 +109,30 @@ def main() -> None:
     parser.add_argument("--symbol", required=True)
     parser.add_argument("--feature-version", required=True)
     parser.add_argument("--optimize", action="store_true")
+    parser.add_argument("--train-end", default=None, help="Inclusive train cutoff date (YYYY-MM-DD)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     settings = load_settings()
+    progress_path = str(settings["ml"]["training"].get("progress_path", "./outputs/ml/training_progress.json"))
 
     symbol = args.symbol.upper()
+    asset_class = "crypto" if symbol.endswith("USDT") else "equity"
     feature_version = args.feature_version
+    dataset_cfg = settings.get("ml", {}).get("dataset", {})
+    train_end = pd.Timestamp(args.train_end or dataset_cfg.get("train_end", "2025-12-31"), tz="UTC")
+    progress = TrainingProgressTracker(progress_path, symbol=symbol, feature_version=args.feature_version, optimize=args.optimize)
 
     lookback_years = int(settings["data"].get("lookback_years", 8))
-    end = pd.Timestamp.utcnow()
+    end = train_end
     start = end - pd.DateOffset(years=lookback_years)
 
-    _ensure_features(symbol, feature_version, settings, start.date().isoformat(), end.date().isoformat())
+    progress.update(phase="features", message="Pruefe/vervollstaendige Feature-Cache", percent=2.0)
+    _ensure_features(symbol, asset_class, feature_version, settings, start.date().isoformat(), end.date().isoformat())
 
     feature_store = FeatureStore(base_path=settings["data"]["storage_path"] + "/features")
-    X, y = feature_store.load(symbol=symbol, feature_version=feature_version)
+    progress.update(phase="loading_data", message="Lade Rohfeatures und Labels", percent=5.0)
+    X, y = feature_store.load_raw(symbol=symbol, feature_version=feature_version, end=train_end)
 
     # Keep only samples with known labels.
     valid_idx = y.dropna().index
@@ -163,14 +140,16 @@ def main() -> None:
     y = y.reindex(valid_idx).astype(int)
 
     LOGGER.info("Loaded features: X=%s y=%s", X.shape, y.shape)
+    LOGGER.info("Training cutoff for %s: %s", symbol, train_end.date().isoformat())
 
-    labeling_cfg = settings["ml"]["labeling"]
+    labeling_cfg = settings["ml"]["labeling"][asset_class]
     labeler = TripleBarrierLabeler(
         take_profit=float(labeling_cfg["take_profit"]),
         stop_loss=float(labeling_cfg["stop_loss"]),
         max_holding=int(labeling_cfg["max_holding"]),
         min_return=float(labeling_cfg["min_return"]),
         handle_imbalance=str(labeling_cfg.get("handle_imbalance", "weights")),
+        asset_class=asset_class,
     )
     class_weights = labeler.get_class_weights(y)
     LOGGER.info("Class weights: %s", class_weights)
@@ -182,114 +161,167 @@ def main() -> None:
         step_size_days=int(train_cfg["step_size_days"]),
         purge_days=int(train_cfg["purge_days"]),
         embargo_days=int(train_cfg["embargo_days"]),
+        val_fraction=float(train_cfg.get("val_fraction", 0.15)),
+        val_purge_days=int(train_cfg.get("val_purge_days", 5)),
+        overfitting_threshold=float(train_cfg.get("overfitting_threshold", 0.5)),
     )
 
     model_params = dict(settings["ml"]["model"].get("params", {}))
-    validator = WalkForwardValidator(
-        model_class=LGBMClassifier,
-        model_params=model_params,
-        config=wf_config,
-    )
-
-    wf_result = validator.run(X, y, class_weights=class_weights)
-
     returns = _load_ohlcv_returns(
         symbol=symbol,
         start=X.index.min(),
         end=X.index.max(),
         settings=settings,
     )
-
-    evaluator = ModelEvaluator()
-    cls_metrics = evaluator.compute_classification_metrics(
-        y_true=y.reindex(wf_result.predictions.index),
-        y_pred=wf_result.predictions.to_numpy(),
+    feature_engineer = FeatureEngineer(
+        config={
+            "feature_groups": settings["ml"]["features"]["crypto_groups"] if asset_class == "crypto" else settings["ml"]["features"]["groups"],
+            "normalization": settings["ml"]["features"]["normalization"],
+            "lookback_periods": settings["ml"]["features"].get("lookback_periods", {}),
+            "warmup_bars": int(settings["ml"]["features"].get("lookback_periods", {}).get("warmup_bars", 200)),
+        },
+        asset_class=asset_class,
     )
-    wf_result.aggregate_metrics.update(cls_metrics)
-
-    trading_metrics = evaluator.compute_trading_metrics(
-        y_pred=wf_result.predictions,
-        returns=returns,
-        transaction_cost_bps=float(train_cfg.get("transaction_cost_bps", 7.0)),
+    signal_cfg = settings["ml"].get("signal_filter", {})
+    signal_filter = SignalFilter(
+        min_confidence=float(signal_cfg.get("fallback_threshold", settings["ml"]["strategy"].get("min_confidence", 0.45))),
+        min_holding_days=int(settings["ml"]["strategy"].get("min_holding_days", 3)),
     )
+    threshold_optimization = bool(signal_cfg.get("threshold_optimization", False))
+    threshold_candidates = [float(v) for v in signal_cfg.get("threshold_candidates", [0.35, 0.40, 0.45, 0.50, 0.55, 0.60])]
+    fallback_threshold = float(signal_cfg.get("fallback_threshold", settings["ml"]["strategy"].get("min_confidence", 0.45)))
 
-    wf_result.metrics_per_fold = wf_result.metrics_per_fold.copy()
-    if not wf_result.metrics_per_fold.empty:
-        # attach fold-level strategy sharpe using fold prediction slices
-        fold_sharpes: list[float] = []
-        for _, row in wf_result.metrics_per_fold.iterrows():
-            mask = (wf_result.predictions.index >= row["test_start"]) & (wf_result.predictions.index <= row["test_end"])
-            fold_pred = wf_result.predictions.loc[mask]
-            fold_ret = returns.reindex(fold_pred.index)
-            fold_tm = evaluator.compute_trading_metrics(
-                y_pred=fold_pred,
-                returns=fold_ret,
+    try:
+        if args.optimize:
+            nested_cfg = settings["ml"]["nested_walk_forward"]
+            outer_cfg = WalkForwardConfig(**nested_cfg["outer"])
+            inner_cfg = WalkForwardConfig(**nested_cfg["inner"])
+            nested_validator = NestedWalkForwardValidator(
+                model_class=LGBMClassifier,
+            config=NestedWalkForwardConfig(outer=outer_cfg, inner=inner_cfg, param_grid=dict(nested_cfg["param_grid"])),
+            feature_engineer=feature_engineer,
+            signal_filter=signal_filter,
+            transaction_cost_bps=float(train_cfg.get("transaction_cost_bps", 7.0)),
+            threshold_optimization=threshold_optimization,
+            threshold_candidates=threshold_candidates,
+            fallback_threshold=fallback_threshold,
+            )
+            nested_result = nested_validator.run(
+                X,
+                y,
+                returns=returns,
+                class_weights=class_weights,
+                base_params=model_params,
+                progress_callback=lambda payload: progress.update(**payload),
+            )
+            wf_result = nested_result.walk_forward_result
+            wf_result.params_stability = nested_result.params_stability
+            model_params.update(
+                {
+                    key: (float(summary["most_common"]) if "." in str(summary["most_common"]) else int(summary["most_common"]))
+                    for key, summary in nested_result.params_stability.items()
+                    if summary.get("most_common") is not None
+                }
+            )
+            LOGGER.info("Nested Walk-Forward params_stability: %s", nested_result.params_stability)
+        else:
+            progress.update(phase="walk_forward", message="Fuehre Walk-Forward Validierung aus", percent=35.0)
+            validator = WalkForwardValidator(
+                model_class=LGBMClassifier,
+                model_params=model_params,
+                config=wf_config,
+                feature_engineer=feature_engineer,
+                signal_filter=signal_filter,
+                threshold_optimization=threshold_optimization,
+                threshold_candidates=threshold_candidates,
+                fallback_threshold=fallback_threshold,
                 transaction_cost_bps=float(train_cfg.get("transaction_cost_bps", 7.0)),
             )
-            fold_sharpes.append(float(fold_tm["strategy_sharpe"]))
-        wf_result.metrics_per_fold["strategy_sharpe"] = fold_sharpes
+            wf_result = validator.run(X, y, returns=returns, class_weights=class_weights)
 
-    output_dir = Path(train_cfg.get("results_output_dir", "./outputs/ml/"))
-    model_dir = Path(train_cfg.get("model_output_dir", "./models/"))
-    output_dir.mkdir(parents=True, exist_ok=True)
-    model_dir.mkdir(parents=True, exist_ok=True)
-
-    evaluator.plot_results(wf_result, returns, output_dir=str(output_dir))
-    report = evaluator.generate_report(wf_result, trading_metrics)
-    print(report)
-
-    # Final model on all data.
-    final_params = dict(model_params)
-    if class_weights:
-        final_params["class_weights"] = class_weights
-    final_model = LGBMClassifier(params=final_params)
-    final_model.fit(X, y)
-
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    model_path = model_dir / f"lgbm_{feature_version}_{timestamp}.joblib"
-    final_model.save(str(model_path))
-    scaler_path = model_dir / f"lgbm_{feature_version}_{timestamp}.scaler.joblib"
-    try:
-        ohlcv_for_scaler = _load_ohlcv(
-            symbol=symbol,
-            start=X.index.min(),
-            end=X.index.max(),
-            settings=settings,
+        evaluator = ModelEvaluator()
+        cls_metrics = evaluator.compute_classification_metrics(
+            y_true=y.reindex(wf_result.predictions.index),
+            y_pred=wf_result.predictions.to_numpy(),
         )
-        scaler_engineer = FeatureEngineer()
-        _ = scaler_engineer.fit_transform(ohlcv_for_scaler)
-        scaler_engineer.save_scaler(str(scaler_path))
-        LOGGER.info("Saved scaler artifact: %s", scaler_path)
-    except Exception as exc:  # pragma: no cover - runtime/data dependent
-        LOGGER.warning("Could not persist scaler artifact: %s", exc)
-    wf_path = output_dir / f"walk_forward_result_{symbol}_{feature_version}_{timestamp}.pkl"
-    joblib.dump(wf_result, wf_path)
-    LOGGER.info("Saved model: %s", model_path)
+        wf_result.aggregate_metrics.update(cls_metrics)
 
-    registry = ModelRegistry(registry_path=str(settings["ml"]["registry"]["path"]))
-    model_id = f"lgbm_{symbol}_{feature_version}_{timestamp}"
-    registry.register(
-        model_id=model_id,
-        model_path=str(model_path),
-        symbol=symbol,
-        feature_version=feature_version,
-        walk_forward_metrics=trading_metrics,
-        trained_at=datetime.now(timezone.utc).isoformat(),
-    )
-    registry.set_default(symbol, model_id)
-    LOGGER.info("Registered model '%s' and set as default for %s", model_id, symbol)
-
-    if args.optimize:
-        _ = _run_hyperparameter_search(
-            X=X,
-            y=y,
+        trading_metrics = evaluator.compute_trading_metrics(
+            y_pred=wf_result.predictions,
             returns=returns,
-            class_weights=class_weights,
-            base_params=model_params,
-            config=wf_config,
-            output_dir=output_dir,
             transaction_cost_bps=float(train_cfg.get("transaction_cost_bps", 7.0)),
         )
+
+        output_dir = Path(train_cfg.get("results_output_dir", "./outputs/ml/"))
+        model_dir = Path(train_cfg.get("model_output_dir", "./models/"))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        progress.update(phase="reporting", message="Berechne Reports und Charts", percent=92.0)
+        evaluator.plot_results(wf_result, returns, output_dir=str(output_dir))
+        report = evaluator.generate_report(wf_result, trading_metrics)
+        print(report)
+
+        progress.update(phase="final_model", message="Trainiere finales Modell", percent=95.0)
+        final_params = dict(model_params)
+        if class_weights:
+            final_params["class_weights"] = class_weights
+        final_model = LGBMClassifier(params=final_params)
+        final_scaler = feature_engineer.fit_scaler(X)
+        X_scaled = feature_engineer.scale_features(X, final_scaler)
+        X_train_final, y_train_final, X_val_final, y_val_final = _split_final_train_validation(
+            X_scaled,
+            y,
+            val_fraction=float(train_cfg.get("val_fraction", 0.15)),
+            val_purge_days=int(train_cfg.get("val_purge_days", 5)),
+        )
+        final_model.fit(X_train_final, y_train_final, X_val=X_val_final, y_val=y_val_final)
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        model_path = model_dir / f"lgbm_{feature_version}_{timestamp}.joblib"
+        final_model.save(str(model_path))
+        scaler_path = model_dir / f"lgbm_{feature_version}_{timestamp}.scaler.joblib"
+        try:
+            joblib.dump(final_scaler, scaler_path)
+            LOGGER.info("Saved scaler artifact: %s", scaler_path)
+        except Exception as exc:  # pragma: no cover - runtime/data dependent
+            LOGGER.warning("Could not persist scaler artifact: %s", exc)
+        wf_path = output_dir / f"walk_forward_result_{symbol}_{feature_version}_{timestamp}.pkl"
+        joblib.dump(wf_result, wf_path)
+        LOGGER.info("Saved model: %s", model_path)
+        loss_curves_path = model_dir / f"lgbm_{symbol}_{feature_version}_{timestamp}_loss_curves.json"
+        loss_payload = {
+            "model_id": f"lgbm_{symbol}_{feature_version}_{timestamp}",
+            "n_folds": len(wf_result.folds),
+            "aggregate": wf_result.aggregate_loss,
+            "folds": wf_result.loss_histories,
+        }
+        loss_curves_path.write_text(json.dumps(loss_payload, indent=2), encoding="utf-8")
+        LOGGER.info("Saved loss curves: %s", loss_curves_path)
+
+        registry = ModelRegistry(registry_path=str(settings["ml"]["registry"]["path"]))
+        model_id = f"lgbm_{symbol}_{feature_version}_{timestamp}"
+        registry.register(
+            model_id=model_id,
+            model_path=str(model_path),
+            symbol=symbol,
+            feature_version=feature_version,
+            walk_forward_metrics=trading_metrics,
+            trained_at=datetime.now(timezone.utc).isoformat(),
+            analysis={
+                "stability": evaluator.compute_stability_risk(wf_result.metrics_per_fold),
+                "overfitting": wf_result.overfitting_gap,
+                "threshold_analysis": wf_result.threshold_stability,
+                "params_stability": wf_result.params_stability,
+            },
+            loss_curves_path=str(loss_curves_path),
+        )
+        registry.set_default(symbol, model_id)
+        LOGGER.info("Registered model '%s' and set as default for %s", model_id, symbol)
+        progress.complete(model_id=model_id)
+    except Exception as exc:
+        progress.fail(str(exc))
+        raise
 
 
 if __name__ == "__main__":

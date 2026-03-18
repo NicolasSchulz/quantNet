@@ -45,28 +45,30 @@ def performance_stats(
     end_date: Optional[datetime] = None,
     symbol: Optional[str] = None,
     strategy: Optional[str] = None,
+    asset_class: Optional[str] = None,
 ) -> dict[str, object]:
-    return get_trading_stats(start_date=start_date, end_date=end_date, symbol=symbol, strategy=strategy)
+    return get_trading_stats(start_date=start_date, end_date=end_date, symbol=symbol, strategy=strategy, asset_class=asset_class)
 
 
 @router.get("/equity-curve", response_model=EquityCurveResponse)
 def performance_equity_curve(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    asset_class: Optional[str] = None,
 ) -> dict[str, object]:
-    return get_equity_curve(start_date=start_date, end_date=end_date)
+    return get_equity_curve(start_date=start_date, end_date=end_date, asset_class=asset_class)
 
 
 @router.get("/pnl-distribution", response_model=PnlDistributionResponse)
-def performance_pnl_distribution() -> dict[str, object]:
-    return get_pnl_distribution()
+def performance_pnl_distribution(asset_class: Optional[str] = None) -> dict[str, object]:
+    return get_pnl_distribution(asset_class=asset_class)
 
 
 @router.get("/by-symbol", response_model=SymbolPerformanceResponse)
-def performance_by_symbol() -> dict[str, object]:
-    return get_performance_by_symbol()
+def performance_by_symbol(asset_class: Optional[str] = None) -> dict[str, object]:
+    return get_performance_by_symbol(asset_class=asset_class)
 
 
 @router.get("/by-exit-reason", response_model=ExitReasonPerformanceResponse)
-def performance_by_exit_reason() -> dict[str, object]:
-    return get_performance_by_exit_reason()
+def performance_by_exit_reason(asset_class: Optional[str] = None) -> dict[str, object]:
+    return get_performance_by_exit_reason(asset_class=asset_class)

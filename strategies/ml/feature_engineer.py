@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
+import warnings
 
 import joblib
 import numpy as np
@@ -67,6 +68,16 @@ CANDLE_FEATURES = {
     "lower_wick",
     "gap",
 }
+CRYPTO_FEATURES = {
+    "funding_rate_proxy",
+    "volume_usd_ratio",
+    "price_vs_ath_proxy",
+    "volatility_regime",
+    "close_rank_252d",
+    "days_since_rolling_high_252",
+    "sma_100_vs_sma200",
+    "trend_slope_200",
+}
 
 GROUP_TO_FEATURES = {
     "trend": TREND_FEATURES,
@@ -74,6 +85,7 @@ GROUP_TO_FEATURES = {
     "volatility": VOLATILITY_FEATURES,
     "volume": VOLUME_FEATURES,
     "candle": CANDLE_FEATURES,
+    "crypto": CRYPTO_FEATURES,
 }
 
 # Keep naturally bounded indicators unchanged.
@@ -96,25 +108,30 @@ class FeatureEngineer:
     lookback is 200 bars and additional bars improve stability.
     """
 
-    def __init__(self, config: dict[str, Any] | None = None) -> None:
+    def __init__(self, config: dict[str, Any] | None = None, asset_class: str = "equity") -> None:
         if config is None:
             with Path("config/settings.yaml").open("r", encoding="utf-8") as f:
                 settings = yaml.safe_load(f)
             ml_cfg = settings.get("ml", {}).get("features", {})
             lb = ml_cfg.get("lookback_periods", {})
+            groups_key = "crypto_groups" if asset_class == "crypto" else "groups"
             config = {
-                "feature_groups": ml_cfg.get("groups", ["trend", "momentum", "volatility", "volume", "candle"]),
+                "feature_groups": ml_cfg.get(groups_key, ml_cfg.get("groups", ["trend", "momentum", "volatility", "volume", "candle"])),
                 "normalization": ml_cfg.get("normalization", "robust"),
                 "lookback_periods": lb,
                 "warmup_bars": int(lb.get("warmup_bars", ml_cfg.get("warmup_bars", 200))),
             }
 
         self.config = config
+        self.asset_class = str(asset_class).lower()
         self.feature_groups: list[str] = list(config.get("feature_groups", config.get("groups", [])))
+        if self.asset_class == "crypto" and "crypto" not in self.feature_groups:
+            self.feature_groups.append("crypto")
         self.normalization: str = str(config.get("normalization", "robust")).lower()
         self.warmup_bars: int = int(config.get("warmup_bars", 200))
         self.lookback_periods: dict[str, int] = dict(config.get("lookback_periods", {}))
         self.scaler: RobustScaler | None = None
+        self._scale_columns: list[str] = []
         self.feature_names_: list[str] = []
 
     def _lb(self, key: str, default: int) -> int:
@@ -130,7 +147,7 @@ class FeatureEngineer:
         if not isinstance(data.index, pd.DatetimeIndex):
             raise ValueError("Input index must be a pandas DatetimeIndex.")
 
-    def _compute_all_features(self, data: pd.DataFrame) -> pd.DataFrame:
+    def compute_features(self, data: pd.DataFrame) -> pd.DataFrame:
         self._validate_input(data)
         df = data.copy().sort_index()
 
@@ -216,6 +233,37 @@ class FeatureEngineer:
         out["lower_wick"] = (pd.concat([o, c], axis=1).min(axis=1) - l) / hl_range
         out["gap"] = (o - c.shift(1)) / (c.shift(1) + 1e-10)
 
+        if self.asset_class == "crypto":
+            taker_volume = pd.to_numeric(df.get("taker_volume", pd.Series(np.nan, index=df.index)), errors="coerce")
+            volume_usd = pd.to_numeric(df.get("volume_usd", v * c), errors="coerce")
+            realized_vol_24h = log_returns.rolling(24).std(ddof=0) * np.sqrt(365.0 * 24.0)
+            realized_vol_7d = log_returns.rolling(24 * 7).std(ddof=0) * np.sqrt(365.0 * 24.0)
+            rolling_year = 24 * 252
+
+            def _close_rank(values: np.ndarray) -> float:
+                if len(values) == 0:
+                    return np.nan
+                s = pd.Series(values)
+                return float(s.rank(pct=True).iloc[-1])
+
+            def _bars_since_high(values: np.ndarray) -> float:
+                if len(values) == 0:
+                    return np.nan
+                return float((len(values) - 1) - int(np.argmax(values)))
+
+            # Older cached crypto bars may not include taker_volume yet.
+            # Use a neutral value instead of dropping the whole feature matrix.
+            funding_rate_proxy = (taker_volume / (v + 1e-10)) - 0.5
+            out["funding_rate_proxy"] = funding_rate_proxy.fillna(0.0)
+            out["volume_usd_ratio"] = volume_usd / (ta.sma(volume_usd, length=20) + 1e-10)
+            out["price_vs_ath_proxy"] = c / (c.rolling(365).max() + 1e-10)
+            out["volatility_regime"] = realized_vol_24h / (realized_vol_7d + 1e-10)
+            sma_100 = ta.sma(c, length=100)
+            out["close_rank_252d"] = c.rolling(rolling_year).apply(_close_rank, raw=True)
+            out["days_since_rolling_high_252"] = c.rolling(rolling_year).apply(_bars_since_high, raw=True) / float(rolling_year)
+            out["sma_100_vs_sma200"] = (sma_100 / (out["sma_200"] + 1e-10)) - 1.0
+            out["trend_slope_200"] = ta.slope(out["sma_200"], length=20) / (out["sma_200"] + 1e-10)
+
         selected_features = sorted(
             set().union(*(GROUP_TO_FEATURES[g] for g in self.feature_groups if g in GROUP_TO_FEATURES))
         )
@@ -227,40 +275,73 @@ class FeatureEngineer:
         self.feature_names_ = list(out.columns)
         return out
 
-    def _scaled_features(self, features: pd.DataFrame, fit: bool) -> pd.DataFrame:
+    def fit_scaler(self, X: pd.DataFrame) -> RobustScaler:
         if self.normalization != "robust":
-            return features
+            scaler = RobustScaler(with_centering=False, with_scaling=False)
+            scaler.fit(np.zeros((1, len(X.columns) or 1)))
+            return scaler
 
-        bounded_cols = [c for c in features.columns if c in BOUNDED_FEATURES]
-        scale_cols = [c for c in features.columns if c not in bounded_cols]
+        scale_cols = [c for c in X.columns if c not in BOUNDED_FEATURES]
+        scaler = RobustScaler()
+        if scale_cols:
+            scaler.fit(X[scale_cols])
+        self._scale_columns = scale_cols
+        return scaler
+
+    def scale_features(
+        self,
+        X: pd.DataFrame,
+        scaler: RobustScaler,
+    ) -> pd.DataFrame:
+        if self.normalization != "robust":
+            return X.astype("float64")
+
+        scale_cols = [c for c in X.columns if c not in BOUNDED_FEATURES]
         if not scale_cols:
-            return features
+            return X.astype("float64")
 
-        result = features.copy()
-        if fit:
-            self.scaler = RobustScaler()
-            result[scale_cols] = self.scaler.fit_transform(result[scale_cols])
-            LOGGER.info("Fitted RobustScaler on %d features", len(scale_cols))
-        else:
-            if self.scaler is None:
-                LOGGER.warning("No fitted scaler found. Returning unscaled features for transform().")
-                return result
-            result[scale_cols] = self.scaler.transform(result[scale_cols])
-
+        result = X.copy()
+        result[scale_cols] = scaler.transform(result[scale_cols])
         result = result.astype("float64")
         return result
+
+    def _warn_deprecated_transform(self) -> None:
+        msg = (
+            "transform() / fit_transform() ist deprecated. Nutze compute_features() + "
+            "fit_scaler() + scale_features() fuer korrektes Walk-Forward Setup."
+        )
+        LOGGER.warning(msg)
+        warnings.warn(msg, DeprecationWarning, stacklevel=2)
+
+    def _scaled_features(self, features: pd.DataFrame, fit: bool) -> pd.DataFrame:
+        if self.normalization != "robust":
+            return features.astype("float64")
+
+        if fit:
+            self.scaler = self.fit_scaler(features)
+            scale_cols = [c for c in features.columns if c not in BOUNDED_FEATURES]
+            LOGGER.info("Fitted RobustScaler on %d features", len(scale_cols))
+            return self.scale_features(features, self.scaler)
+
+        if self.scaler is None:
+            LOGGER.warning("No fitted scaler found. Returning unscaled features for transform().")
+            return features.astype("float64")
+
+        return self.scale_features(features, self.scaler)
 
     def transform(self, data: pd.DataFrame) -> pd.DataFrame:
         """Transform normalized OHLCV into engineered features.
 
         Returns a feature-only DataFrame indexed by timestamp.
         """
-        features = self._compute_all_features(data)
+        self._warn_deprecated_transform()
+        features = self.compute_features(data)
         return self._scaled_features(features, fit=False)
 
     def fit_transform(self, data: pd.DataFrame) -> pd.DataFrame:
         """Fit scaler on this dataset and return transformed features."""
-        features = self._compute_all_features(data)
+        self._warn_deprecated_transform()
+        features = self.compute_features(data)
         return self._scaled_features(features, fit=True)
 
     def save_scaler(self, path: str) -> None:

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 class CostModel:
     """Transaction cost model with commission, slippage, and spread."""
 
+    asset_class: str = "equity"
     commission: float = 0.001
     slippage_bps: float = 5.0
     spread_bps: float = 2.0

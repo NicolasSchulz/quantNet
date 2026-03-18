@@ -30,7 +30,10 @@ def test_normalize_schema_and_utc(raw_df: pd.DataFrame) -> None:
         "low",
         "close",
         "volume",
+        "volume_usd",
         "vwap",
+        "trades",
+        "taker_volume",
         "symbol",
         "asset_class",
     ]
@@ -68,3 +71,23 @@ def test_normalize_polygon_epoch_milliseconds() -> None:
 
     assert out.index[0] == pd.Timestamp("2024-01-01 00:00:00+00:00")
     assert out.index[1] == pd.Timestamp("2024-01-01 01:00:00+00:00")
+
+
+def test_normalize_binance_adds_crypto_fields() -> None:
+    raw = pd.DataFrame(
+        {
+            "open_time": [1704067200000, 1704070800000],
+            "open": [42_000.0, 42_100.0],
+            "high": [42_050.0, 42_180.0],
+            "low": [41_950.0, 42_000.0],
+            "close": [42_020.0, 42_150.0],
+            "volume": [10.0, 12.0],
+            "number_of_trades": [500, 550],
+            "taker_buy_base_volume": [4.0, 5.0],
+        }
+    )
+    out = normalize_ohlcv(raw, symbol="BTCUSDT", asset_class="equity", interval="1h")
+    assert (out["asset_class"] == "crypto").all()
+    assert out["trades"].iloc[0] == 500
+    assert out["taker_volume"].iloc[1] == 5.0
+    assert out["volume_usd"].iloc[0] == pytest.approx(420200.0)

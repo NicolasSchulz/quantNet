@@ -3,6 +3,7 @@ import type { PriceContextResponse, Trade, TradeListResponse, TradesSummary } fr
 
 export interface TradeFilters {
   symbol?: string
+  asset_class?: "equity" | "crypto" | ""
   direction?: "LONG" | "SHORT" | ""
   status?: "OPEN" | "CLOSED" | "" | "CANCELLED"
   start_date?: string
@@ -17,8 +18,8 @@ export const fetchTrades = async (filters: TradeFilters) => {
   return data
 }
 
-export const fetchTradeSummary = async () => {
-  const { data } = await apiClient.get<TradesSummary>("/trades/summary")
+export const fetchTradeSummary = async (filters: Pick<TradeFilters, "asset_class"> = {}) => {
+  const { data } = await apiClient.get<TradesSummary>("/trades/summary", { params: cleanParams(filters) })
   return data
 }
 

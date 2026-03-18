@@ -14,6 +14,7 @@ ExitReason = Literal["TAKE_PROFIT", "STOP_LOSS", "TIME_BARRIER", "MANUAL"]
 class Trade(BaseModel):
     id: str
     symbol: str
+    asset_class: Literal["equity", "crypto"]
     direction: Direction
     status: TradeStatus
     entry_time: datetime

@@ -16,7 +16,10 @@ SCHEMA_COLUMNS: list[str] = [
     "low",
     "close",
     "volume",
+    "volume_usd",
     "vwap",
+    "trades",
+    "taker_volume",
     "symbol",
     "asset_class",
 ]
@@ -71,6 +74,8 @@ def _normalize_polygon(df: pd.DataFrame) -> pd.DataFrame:
             "close": pd.to_numeric(df["close"], errors="coerce"),
             "volume": pd.to_numeric(df["volume"], errors="coerce"),
             "vwap": pd.to_numeric(df.get("vwap", pd.NA), errors="coerce"),
+            "trades": pd.to_numeric(df.get("transactions", df.get("number_of_trades", pd.NA)), errors="coerce"),
+            "taker_volume": pd.to_numeric(df.get("taker_buy_base_volume", pd.NA), errors="coerce"),
         }
     )
     return out
@@ -123,7 +128,8 @@ def normalize_ohlcv(
     """Normalize provider OHLCV output to unified schema.
 
     Output schema:
-    [timestamp, open, high, low, close, volume, vwap, symbol, asset_class]
+    [timestamp, open, high, low, close, volume, volume_usd, vwap, trades,
+    taker_volume, symbol, asset_class]
 
     - All timestamps are UTC.
     - VWAP is optional and NaN for feeds that do not provide it.
@@ -145,7 +151,13 @@ def normalize_ohlcv(
         normalized = _normalize_yahoo(df)
 
     normalized["symbol"] = symbol.upper()
-    normalized["asset_class"] = asset_class
+    inferred_asset_class = "crypto" if normalized["symbol"].str.endswith("USDT").all() else asset_class
+    normalized["asset_class"] = inferred_asset_class
+    if "trades" not in normalized.columns:
+        normalized["trades"] = pd.NA
+    if "taker_volume" not in normalized.columns:
+        normalized["taker_volume"] = pd.NA
+    normalized["volume_usd"] = normalized["volume"] * normalized["close"]
 
     if normalized[["open", "high", "low", "close"]].isna().any().any():
         raise ValueError("OHLC columns contain NaN values after normalization.")
@@ -156,7 +168,7 @@ def normalize_ohlcv(
     normalized.index = pd.to_datetime(normalized["timestamp"], utc=True)
     normalized.index.name = "timestamp"
 
-    if validate_trading_hours:
+    if validate_trading_hours and inferred_asset_class != "crypto":
         _validate_trading_hours(normalized)
     if interval is not None:
         check_gaps(normalized, interval=interval)

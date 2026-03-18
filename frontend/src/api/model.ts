@@ -3,8 +3,12 @@ import type {
   ConfusionMatrixData,
   FeatureImportance,
   FoldResult,
+  LossCurvesData,
   ModelListItem,
   ModelMetrics,
+  ThresholdAnalysis,
+  TrainingProgress,
+  TrainOOSComparison,
 } from "../types"
 
 export const fetchModelList = async () => {
@@ -34,5 +38,25 @@ export const fetchFoldResults = async (modelId: string) => {
 
 export const fetchFeatureImportance = async (modelId: string) => {
   const { data } = await apiClient.get<{ features: FeatureImportance[] }>(`/model/${modelId}/feature-importance`)
+  return data
+}
+
+export const fetchTrainOOSComparison = async (modelId: string) => {
+  const { data } = await apiClient.get<TrainOOSComparison>(`/model/${modelId}/train-oos-comparison`)
+  return data
+}
+
+export const fetchThresholdAnalysis = async (modelId: string) => {
+  const { data } = await apiClient.get<ThresholdAnalysis>(`/model/${modelId}/threshold-analysis`)
+  return data
+}
+
+export const fetchLossCurves = async (modelId: string) => {
+  const { data } = await apiClient.get<LossCurvesData>(`/model/${modelId}/loss-curves`)
+  return data
+}
+
+export const fetchTrainingProgress = async () => {
+  const { data } = await apiClient.get<TrainingProgress>("/model/training/progress")
   return data
 }

@@ -15,26 +15,26 @@ export const useTradingStats = (filters: PerformanceFilters) =>
     queryFn: () => fetchTradingStats(filters),
   })
 
-export const useEquityCurve = (filters: Pick<PerformanceFilters, "start_date" | "end_date">) =>
+export const useEquityCurve = (filters: Pick<PerformanceFilters, "start_date" | "end_date" | "asset_class">) =>
   useQuery({
     queryKey: ["equity-curve", filters],
     queryFn: () => fetchEquityCurve(filters),
   })
 
-export const usePnlDistribution = () =>
+export const usePnlDistribution = (filters: Pick<PerformanceFilters, "asset_class">) =>
   useQuery({
-    queryKey: ["pnl-distribution"],
-    queryFn: fetchPnlDistribution,
+    queryKey: ["pnl-distribution", filters],
+    queryFn: () => fetchPnlDistribution(filters),
   })
 
-export const usePerformanceBySymbol = () =>
+export const usePerformanceBySymbol = (filters: Pick<PerformanceFilters, "asset_class">) =>
   useQuery({
-    queryKey: ["performance-by-symbol"],
-    queryFn: fetchPerformanceBySymbol,
+    queryKey: ["performance-by-symbol", filters],
+    queryFn: () => fetchPerformanceBySymbol(filters),
   })
 
-export const usePerformanceByExitReason = () =>
+export const usePerformanceByExitReason = (filters: Pick<PerformanceFilters, "asset_class">) =>
   useQuery({
-    queryKey: ["performance-by-exit-reason"],
-    queryFn: fetchPerformanceByExitReason,
+    queryKey: ["performance-by-exit-reason", filters],
+    queryFn: () => fetchPerformanceByExitReason(filters),
   })

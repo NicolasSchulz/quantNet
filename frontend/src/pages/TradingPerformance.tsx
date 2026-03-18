@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import { Bar, BarChart, CartesianGrid, Cell, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts"
 
 import { EquityCurve } from "../components/charts/EquityCurve"
+import { AssetClassBadge } from "../components/ui/StatusBadge"
 import { DataTable, type Column } from "../components/ui/DataTable"
 import { ErrorState } from "../components/ui/ErrorState"
 import { LoadingSpinner } from "../components/ui/LoadingSpinner"
@@ -19,17 +20,23 @@ const periods = [
   { label: "1Y", days: 365 },
   { label: "All", days: null },
 ]
+const assetClassOptions = [
+  { label: "Alle Assets", value: undefined },
+  { label: "Equities", value: "equity" as const },
+  { label: "Crypto", value: "crypto" as const },
+]
 
 export function TradingPerformance() {
   const [period, setPeriod] = useState<(typeof periods)[number]>(periods[4])
+  const [assetClass, setAssetClass] = useState<"equity" | "crypto" | undefined>(undefined)
   const endDate = new Date()
   const startDate = useMemo(() => (period.days ? new Date(Date.now() - period.days * 24 * 60 * 60 * 1000).toISOString() : undefined), [period.days])
 
-  const statsQuery = useTradingStats({})
-  const equityQuery = useEquityCurve({ start_date: startDate, end_date: period.days ? endDate.toISOString() : undefined })
-  const distributionQuery = usePnlDistribution()
-  const bySymbolQuery = usePerformanceBySymbol()
-  const byExitReasonQuery = usePerformanceByExitReason()
+  const statsQuery = useTradingStats({ asset_class: assetClass })
+  const equityQuery = useEquityCurve({ start_date: startDate, end_date: period.days ? endDate.toISOString() : undefined, asset_class: assetClass })
+  const distributionQuery = usePnlDistribution({ asset_class: assetClass })
+  const bySymbolQuery = usePerformanceBySymbol({ asset_class: assetClass })
+  const byExitReasonQuery = usePerformanceByExitReason({ asset_class: assetClass })
 
   if ([statsQuery, equityQuery, distributionQuery, bySymbolQuery, byExitReasonQuery].some((query) => query.isLoading)) {
     return <LoadingSpinner label="Loading performance dashboard..." />
@@ -40,8 +47,22 @@ export function TradingPerformance() {
   }
 
   const stats = statsQuery.data
+  const hasRealPerformanceData =
+    (stats?.total_trades ?? 0) > 0 ||
+    (equityQuery.data?.points?.length ?? 0) > 0 ||
+    (bySymbolQuery.data?.rows?.length ?? 0) > 0
   const symbolColumns: Column<SymbolPerformanceRow>[] = [
-    { key: "symbol", header: "Symbol", sortable: true, render: (row) => row.symbol },
+    {
+      key: "symbol",
+      header: "Symbol",
+      sortable: true,
+      render: (row) => (
+        <div className="flex items-center gap-2">
+          <span>{row.symbol}</span>
+          <AssetClassBadge assetClass={row.asset_class} />
+        </div>
+      ),
+    },
     { key: "trades", header: "Trades", sortable: true, render: (row) => row.trades },
     { key: "win_rate", header: "Win Rate", sortable: true, render: (row) => formatPercent(row.win_rate) },
     { key: "avg_pnl", header: "Avg P&L%", sortable: true, render: (row) => formatPercent(row.avg_pnl) },
@@ -58,6 +79,11 @@ export function TradingPerformance() {
 
   return (
     <div className="space-y-6">
+      {!hasRealPerformanceData ? (
+        <section className="rounded-2xl border border-dashed border-border bg-secondary p-5 text-sm text-textSecondary">
+          Keine echten Performance-Daten gefunden. Diese Seite zeigt nur die Struktur, bis echte Backtest- oder Trade-Ergebnisse im Backend verfuegbar sind.
+        </section>
+      ) : null}
       <MetricCardGrid columns={4}>
         <MetricCard title="Total Trades" value={`${stats?.total_trades ?? 0}`} />
         <MetricCard title="Win Rate" value={formatPercent(stats?.win_rate)} tone={(stats?.win_rate ?? 0) > 0.5 ? "positive" : "negative"} />
@@ -72,7 +98,17 @@ export function TradingPerformance() {
       <section className="rounded-2xl border border-border bg-secondary p-5 shadow-card">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-semibold">Equity Curve</h2>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            {assetClassOptions.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                className={`rounded-lg border px-3 py-1.5 text-sm ${assetClass === item.value ? "border-warning bg-warning/10 text-warning" : "border-border text-textSecondary"}`}
+                onClick={() => setAssetClass(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
             {periods.map((item) => (
               <button
                 key={item.label}
@@ -86,7 +122,25 @@ export function TradingPerformance() {
           </div>
         </div>
         <div className="mt-4">
-          <EquityCurve points={equityQuery.data?.points ?? []} drawdown={equityQuery.data?.points ?? []} />
+          <EquityCurve
+            points={
+              assetClass === "equity"
+                ? equityQuery.data?.equity_points ?? []
+                : assetClass === "crypto"
+                  ? equityQuery.data?.crypto_points ?? []
+                  : equityQuery.data?.combined_points ?? []
+            }
+            drawdown={equityQuery.data?.points ?? []}
+            comparisonSeries={
+              assetClass
+                ? []
+                : [
+                    { label: "Equity", color: colors.blue, points: equityQuery.data?.equity_points ?? [] },
+                    { label: "Crypto", color: colors.yellow, points: equityQuery.data?.crypto_points ?? [] },
+                    { label: "Combined", color: colors.green, points: equityQuery.data?.combined_points ?? [] },
+                  ]
+            }
+          />
         </div>
       </section>
 
