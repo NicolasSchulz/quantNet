@@ -62,3 +62,18 @@ def test_no_leakage_across_folds(synthetic_ohlcv: pd.DataFrame) -> None:
     scaler_1 = eng.fit_scaler(features.iloc[:50])
     scaler_2 = eng.fit_scaler(features.iloc[50:100])
     assert not np.allclose(np.asarray(scaler_1.center_), np.asarray(scaler_2.center_))
+
+
+def test_structure_features_are_numeric(synthetic_ohlcv: pd.DataFrame) -> None:
+    eng = FeatureEngineer(
+        config={
+            "feature_groups": ["trend", "momentum", "volatility", "volume", "candle", "structure"],
+            "normalization": "robust",
+            "warmup_bars": 200,
+            "mss_strategy": {"swing_n": 2, "atr_period": 14, "tp_mult": 3.0, "sl_mult": 1.5, "max_hold": 24, "pullback_timeout": 4},
+        }
+    )
+    features = eng.compute_features(synthetic_ohlcv)
+    for col in ["mss_candidate", "mss_direction", "market_structure_bias", "choch_bullish_flag", "choch_bearish_flag"]:
+        assert col in features.columns
+        assert features[col].dtype == np.float64

@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 from typing import TYPE_CHECKING
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd

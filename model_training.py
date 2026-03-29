@@ -45,8 +45,21 @@ def _ensure_features(
 ) -> None:
     base_feature_path = settings["data"]["storage_path"] + "/features"
     store = FeatureStore(base_path=base_feature_path)
+    entry_strategy = str(settings.get("ml", {}).get("labeling", {}).get("entry_strategy", "all_candles")).lower()
+    entry_strategy_config = settings.get("ml", {}).get("labeling", {}).get(entry_strategy, {})
     if store.exists(symbol, feature_version):
-        return
+        metadata = store.metadata(symbol, feature_version)
+        cached_strategy = str(metadata.get("entry_strategy", "all_candles")).lower()
+        cached_strategy_config = metadata.get("entry_strategy_config", {})
+        if cached_strategy == entry_strategy and cached_strategy_config == entry_strategy_config:
+            return
+        LOGGER.info(
+            "Feature cache strategy mismatch for %s/%s: cached=%s, requested=%s. Rebuilding cache.",
+            symbol,
+            feature_version,
+            cached_strategy,
+            entry_strategy,
+        )
 
     LOGGER.info("Feature cache not found for %s/%s. Running feature_pipeline.py", symbol, feature_version)
     cmd = [
@@ -154,6 +167,7 @@ def main() -> None:
     class_weights = labeler.get_class_weights(y)
     LOGGER.info("Class weights: %s", class_weights)
 
+    entry_strategy = str(settings.get("ml", {}).get("labeling", {}).get("entry_strategy", "all_candles")).lower()
     train_cfg = settings["ml"]["training"]
     wf_config = WalkForwardConfig(
         train_window_days=int(train_cfg["train_window_days"]),
@@ -179,17 +193,26 @@ def main() -> None:
             "normalization": settings["ml"]["features"]["normalization"],
             "lookback_periods": settings["ml"]["features"].get("lookback_periods", {}),
             "warmup_bars": int(settings["ml"]["features"].get("lookback_periods", {}).get("warmup_bars", 200)),
+            "mss_strategy": settings.get("ml", {}).get("labeling", {}).get("mss", {}),
         },
         asset_class=asset_class,
     )
     signal_cfg = settings["ml"].get("signal_filter", {})
+    signal_strategy_cfg = signal_cfg.get(entry_strategy, {}) if isinstance(signal_cfg.get(entry_strategy), dict) else {}
+    strategy_cfg = settings["ml"].get("strategy", {})
+    strategy_entry_cfg = strategy_cfg.get(entry_strategy, {}) if isinstance(strategy_cfg.get(entry_strategy), dict) else {}
+    min_confidence = float(signal_strategy_cfg.get("fallback_threshold", signal_cfg.get("fallback_threshold", strategy_cfg.get("min_confidence", 0.45))))
+    min_holding_days = int(strategy_entry_cfg.get("min_holding_days", strategy_cfg.get("min_holding_days", 3)))
+    signal_smoothing = bool(signal_strategy_cfg.get("signal_smoothing", signal_cfg.get("signal_smoothing", True)))
     signal_filter = SignalFilter(
-        min_confidence=float(signal_cfg.get("fallback_threshold", settings["ml"]["strategy"].get("min_confidence", 0.45))),
-        min_holding_days=int(settings["ml"]["strategy"].get("min_holding_days", 3)),
+        min_confidence=min_confidence,
+        min_holding_days=min_holding_days,
+        signal_smoothing=signal_smoothing,
     )
-    threshold_optimization = bool(signal_cfg.get("threshold_optimization", False))
-    threshold_candidates = [float(v) for v in signal_cfg.get("threshold_candidates", [0.35, 0.40, 0.45, 0.50, 0.55, 0.60])]
-    fallback_threshold = float(signal_cfg.get("fallback_threshold", settings["ml"]["strategy"].get("min_confidence", 0.45)))
+    threshold_optimization = bool(signal_strategy_cfg.get("threshold_optimization", signal_cfg.get("threshold_optimization", False)))
+    threshold_candidates = [float(v) for v in signal_strategy_cfg.get("threshold_candidates", signal_cfg.get("threshold_candidates", [0.35, 0.40, 0.45, 0.50, 0.55, 0.60]))]
+    fallback_threshold = float(signal_strategy_cfg.get("fallback_threshold", signal_cfg.get("fallback_threshold", strategy_cfg.get("min_confidence", 0.45))))
+    min_threshold_optimization_samples = int(signal_strategy_cfg.get("min_val_samples_for_threshold_optimization", signal_cfg.get("min_val_samples_for_threshold_optimization", 0)))
 
     try:
         if args.optimize:
@@ -235,6 +258,7 @@ def main() -> None:
                 threshold_optimization=threshold_optimization,
                 threshold_candidates=threshold_candidates,
                 fallback_threshold=fallback_threshold,
+                min_threshold_optimization_samples=min_threshold_optimization_samples,
                 transaction_cost_bps=float(train_cfg.get("transaction_cost_bps", 7.0)),
             )
             wf_result = validator.run(X, y, returns=returns, class_weights=class_weights)

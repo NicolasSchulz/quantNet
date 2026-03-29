@@ -131,3 +131,22 @@ def test_early_stopping_uses_val_not_test() -> None:
         assert X_train.index.max() <= fold.train_end
         assert X_val.index.min() >= fold.val_start
         assert X_val.index.max() <= fold.val_end
+
+
+def test_small_val_set_uses_fallback_threshold() -> None:
+    X, y, returns, cfg = _small_wf_dataset()
+    validator = WalkForwardValidator(
+        DummyModel,
+        {},
+        cfg,
+        feature_engineer=_validator(cfg).feature_engineer,
+        signal_filter=SignalFilter(min_confidence=0.45, min_holding_days=1, signal_smoothing=False),
+        threshold_optimization=True,
+        threshold_candidates=[0.4, 0.45, 0.5],
+        fallback_threshold=0.45,
+        min_threshold_optimization_samples=10_000,
+    )
+    result = validator.run(X, y, returns=returns)
+    assert not result.metrics_per_fold.empty
+    assert set(result.metrics_per_fold["threshold_source"]) == {"fallback_small_val"}
+    assert set(result.metrics_per_fold["optimal_threshold"]) == {0.45}

@@ -30,6 +30,7 @@ class FeatureStore:
         symbol: str,
         feature_version: str,
         scaler: RobustScaler | None = None,
+        metadata_extra: dict[str, object] | None = None,
     ) -> None:
         version_path = self._version_path(symbol, feature_version)
         version_path.mkdir(parents=True, exist_ok=True)
@@ -57,11 +58,20 @@ class FeatureStore:
             "n_rows": int(len(raw_features)),
             "feature_names": list(raw_features.columns),
             "label_distribution": distribution,
+            "entry_strategy": str(labels.attrs.get("entry_strategy", "all_candles")),
             "take_profit": float(labels.attrs.get("take_profit", 0.02)),
             "stop_loss": float(labels.attrs.get("stop_loss", 0.01)),
             "scaled": False,
         }
+        if metadata_extra:
+            metadata.update(metadata_extra)
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    def metadata(self, symbol: str, feature_version: str) -> dict[str, object]:
+        metadata_path = self._version_path(symbol, feature_version) / "metadata.json"
+        if not metadata_path.exists():
+            return {}
+        return json.loads(metadata_path.read_text(encoding="utf-8"))
 
     def load(
         self,

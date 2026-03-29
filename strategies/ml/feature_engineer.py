@@ -78,6 +78,13 @@ CRYPTO_FEATURES = {
     "sma_100_vs_sma200",
     "trend_slope_200",
 }
+STRUCTURE_FEATURES = {
+    "mss_candidate",
+    "mss_direction",
+    "market_structure_bias",
+    "choch_bullish_flag",
+    "choch_bearish_flag",
+}
 
 GROUP_TO_FEATURES = {
     "trend": TREND_FEATURES,
@@ -86,6 +93,7 @@ GROUP_TO_FEATURES = {
     "volume": VOLUME_FEATURES,
     "candle": CANDLE_FEATURES,
     "crypto": CRYPTO_FEATURES,
+    "structure": STRUCTURE_FEATURES,
 }
 
 # Keep naturally bounded indicators unchanged.
@@ -130,6 +138,7 @@ class FeatureEngineer:
         self.normalization: str = str(config.get("normalization", "robust")).lower()
         self.warmup_bars: int = int(config.get("warmup_bars", 200))
         self.lookback_periods: dict[str, int] = dict(config.get("lookback_periods", {}))
+        self.mss_config: dict[str, Any] = dict(config.get("mss_strategy", {}))
         self.scaler: RobustScaler | None = None
         self._scale_columns: list[str] = []
         self.feature_names_: list[str] = []
@@ -263,6 +272,34 @@ class FeatureEngineer:
             out["days_since_rolling_high_252"] = c.rolling(rolling_year).apply(_bars_since_high, raw=True) / float(rolling_year)
             out["sma_100_vs_sma200"] = (sma_100 / (out["sma_200"] + 1e-10)) - 1.0
             out["trend_slope_200"] = ta.slope(out["sma_200"], length=20) / (out["sma_200"] + 1e-10)
+
+        if "structure" in self.feature_groups:
+            from strategies.ml.mss_entry_strategy import MSSEntryStrategy
+
+            mss = MSSEntryStrategy(
+                swing_n=int(self.mss_config.get("swing_n", 4)),
+                atr_period=int(self.mss_config.get("atr_period", 14)),
+                tp_mult=float(self.mss_config.get("tp_mult", 3.0)),
+                sl_mult=float(self.mss_config.get("sl_mult", 1.5)),
+                max_hold=int(self.mss_config.get("max_hold", 48)),
+                pullback_timeout=int(self.mss_config.get("pullback_timeout", 5)),
+                choch_min_break_atr=float(self.mss_config.get("choch_min_break_atr", 0.15)),
+                choch_min_body_fraction=float(self.mss_config.get("choch_min_body_fraction", 0.35)),
+                pullback_retest_atr=float(self.mss_config.get("pullback_retest_atr", 0.25)),
+                pullback_max_overshoot_atr=float(self.mss_config.get("pullback_max_overshoot_atr", 0.35)),
+                confirmation_break_atr=float(self.mss_config.get("confirmation_break_atr", 0.05)),
+            )
+            structure = mss.apply_mss_filter(df)
+            out["mss_candidate"] = structure["mss_entry_candidate"].astype(float)
+            out["mss_direction"] = structure["entry_direction_bias"].astype(float)
+            out["market_structure_bias"] = (
+                structure["market_structure"]
+                .map({"downtrend": -1.0, "undefined": 0.0, "uptrend": 1.0})
+                .fillna(0.0)
+                .astype(float)
+            )
+            out["choch_bullish_flag"] = structure["choch_bullish"].astype(float)
+            out["choch_bearish_flag"] = structure["choch_bearish"].astype(float)
 
         selected_features = sorted(
             set().union(*(GROUP_TO_FEATURES[g] for g in self.feature_groups if g in GROUP_TO_FEATURES))

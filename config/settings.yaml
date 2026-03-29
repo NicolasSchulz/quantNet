@@ -91,6 +91,7 @@ ml:
       - volume
       - candle
       - crypto
+      - structure
     normalization: "robust"
     lookback_periods:
       sma_short: 20
@@ -108,6 +109,19 @@ ml:
 
   labeling:
     method: "triple_barrier"
+    entry_strategy: "mss"
+    mss:
+      swing_n: 4
+      atr_period: 14
+      tp_mult: 3.0
+      sl_mult: 1.5
+      max_hold: 48
+      pullback_timeout: 5
+      choch_min_break_atr: 0.00
+      choch_min_body_fraction: 0.10
+      pullback_retest_atr: 0.00
+      pullback_max_overshoot_atr: 1.20
+      confirmation_break_atr: 0.00
     equity:
       take_profit: 0.015
       stop_loss: 0.008
@@ -122,13 +136,13 @@ ml:
       handle_imbalance: "weights"
 
   training:
-    train_window_days: 504
-    test_window_days: 63
+    train_window_days: 252
+    test_window_days: 42
     step_size_days: 21
-    purge_days: 5
-    embargo_days: 10
+    purge_days: 3
+    embargo_days: 7
     val_fraction: 0.15
-    val_purge_days: 5
+    val_purge_days: 3
     overfitting_threshold: 0.5
     transaction_cost_bps: 7.0
     model_output_dir: "./models/"
@@ -137,21 +151,21 @@ ml:
 
   nested_walk_forward:
     outer:
-      train_window_days: 504
-      test_window_days: 63
-      step_size_days: 21
-      purge_days: 5
-      embargo_days: 10
-      val_fraction: 0.15
-      val_purge_days: 5
-    inner:
       train_window_days: 252
       test_window_days: 42
       step_size_days: 21
-      purge_days: 5
-      embargo_days: 10
+      purge_days: 3
+      embargo_days: 7
       val_fraction: 0.15
-      val_purge_days: 5
+      val_purge_days: 3
+    inner:
+      train_window_days: 180
+      test_window_days: 30
+      step_size_days: 21
+      purge_days: 3
+      embargo_days: 7
+      val_fraction: 0.15
+      val_purge_days: 3
     param_grid:
       max_depth: [3, 4]
       num_leaves: [7, 15]
@@ -181,14 +195,23 @@ ml:
   strategy:
     min_confidence: 0.45
     min_holding_days: 3
+    mss:
+      min_holding_days: 1
 
   signal_filter:
     threshold_optimization: true
     threshold_candidates: [0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
     fallback_threshold: 0.45
+    min_val_samples_for_threshold_optimization: 0
     use_regime_filter: true
     signal_smoothing: true
     confidence_thresholds_to_test: [0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
+    mss:
+      threshold_optimization: true
+      threshold_candidates: [0.35, 0.40, 0.45, 0.50]
+      fallback_threshold: 0.45
+      min_val_samples_for_threshold_optimization: 30
+      signal_smoothing: false
 
   registry:
     path: "./models/registry.json"

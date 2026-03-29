@@ -118,6 +118,7 @@ class WalkForwardValidator:
         threshold_optimization: bool = False,
         threshold_candidates: list[float] | None = None,
         fallback_threshold: float = 0.45,
+        min_threshold_optimization_samples: int = 0,
         transaction_cost_bps: float = 7.0,
     ) -> None:
         self.model_class = model_class
@@ -128,6 +129,7 @@ class WalkForwardValidator:
         self.threshold_optimization = threshold_optimization
         self.threshold_candidates = threshold_candidates or [0.35, 0.40, 0.45, 0.50, 0.55, 0.60]
         self.fallback_threshold = float(fallback_threshold)
+        self.min_threshold_optimization_samples = int(min_threshold_optimization_samples)
         self.transaction_cost_bps = float(transaction_cost_bps)
 
     def _compute_aggregate_loss(self, loss_histories: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -337,7 +339,7 @@ class WalkForwardValidator:
 
             fold_filter = copy.deepcopy(self.signal_filter) if self.signal_filter is not None else SignalFilter(min_confidence=self.fallback_threshold)
             val_probabilities = model.predict_proba(X_val)
-            if self.threshold_optimization:
+            if self.threshold_optimization and len(X_val) >= self.min_threshold_optimization_samples:
                 optimal_threshold = fold_filter.optimize_threshold(
                     probabilities=val_probabilities,
                     returns=returns.reindex(X_val.index).fillna(0.0),
@@ -345,7 +347,10 @@ class WalkForwardValidator:
                 )
                 fold_filter.set_threshold(optimal_threshold, "val_optimized")
             else:
-                fold_filter.set_threshold(self.fallback_threshold, "fixed")
+                source = "fixed"
+                if self.threshold_optimization and len(X_val) < self.min_threshold_optimization_samples:
+                    source = "fallback_small_val"
+                fold_filter.set_threshold(self.fallback_threshold, source)
 
             test_probabilities = model.predict_proba(X_test)
             test_signals = fold_filter.filter(test_probabilities, pd.DataFrame(index=X_test.index))
